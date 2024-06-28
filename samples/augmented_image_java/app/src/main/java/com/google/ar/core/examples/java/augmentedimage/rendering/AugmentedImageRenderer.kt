@@ -16,9 +16,12 @@
 package com.google.ar.core.examples.java.augmentedimage.rendering
 
 import android.content.Context
+import android.opengl.Matrix
+import android.util.Log
 import com.google.ar.core.Anchor
 import com.google.ar.core.AugmentedImage
 import com.google.ar.core.Pose
+import com.google.ar.core.examples.java.augmentedimage.DetectedObjectResult
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import java.io.IOException
 
@@ -59,33 +62,37 @@ class AugmentedImageRenderer {
     fun draw(
         viewMatrix: FloatArray?,
         projectionMatrix: FloatArray?,
-        augmentedImage: AugmentedImage,
+        augmentedImage: DetectedObjectResult,
         centerAnchor: Anchor,
-        colorCorrectionRgba: FloatArray?
+        colorCorrectionRgba: FloatArray?,
     ) {
+        Log.d(TAG, "drawing $centerAnchor")
         val tintColor =
-            convertHexToColor(TINT_COLORS_HEX[augmentedImage.index % TINT_COLORS_HEX.size])
+            convertHexToColor(TINT_COLORS_HEX[0])
+
+        val xRadius = 0.10795f
+        val yRadius = 0.1397f
 
         val localBoundaryPoses = arrayOf(
             Pose.makeTranslation(
-                -0.5f * augmentedImage.extentX,
+                -xRadius,
                 0.0f,
-                -0.5f * augmentedImage.extentZ
+                -yRadius
             ),  // upper left
             Pose.makeTranslation(
-                0.5f * augmentedImage.extentX,
+                xRadius,
                 0.0f,
-                -0.5f * augmentedImage.extentZ
+                -yRadius
             ),  // upper right
             Pose.makeTranslation(
-                0.5f * augmentedImage.extentX,
+                xRadius,
                 0.0f,
-                0.5f * augmentedImage.extentZ
+                yRadius
             ),  // lower right
             Pose.makeTranslation(
-                -0.5f * augmentedImage.extentX,
+                -xRadius,
                 0.0f,
-                0.5f * augmentedImage.extentZ
+                yRadius
             ) // lower left
         )
 
@@ -99,6 +106,7 @@ class AugmentedImageRenderer {
         val modelMatrix = FloatArray(16)
 
         worldBoundaryPoses[0]!!.toMatrix(modelMatrix, 0)
+//        Matrix.translateM(modelMatrix, 0, -0.5f * augmentedImage.boundingBox.width(), 0f, -0.5f * augmentedImage.boundingBox.height())
         imageFrameUpperLeft.updateModelMatrix(modelMatrix, scaleFactor)
         imageFrameUpperLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
 

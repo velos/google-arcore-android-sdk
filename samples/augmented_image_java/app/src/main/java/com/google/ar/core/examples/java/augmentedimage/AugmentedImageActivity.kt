@@ -34,8 +34,14 @@ import com.google.ar.core.ArCoreApk
 import com.google.ar.core.ArCoreApk.InstallStatus
 import com.google.ar.core.AugmentedImage
 import com.google.ar.core.AugmentedImageDatabase
+import com.google.ar.core.Camera
 import com.google.ar.core.Config
+import com.google.ar.core.Coordinates2d
+import com.google.ar.core.DepthPoint
 import com.google.ar.core.Frame
+import com.google.ar.core.InstantPlacementPoint
+import com.google.ar.core.Plane
+import com.google.ar.core.Point
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.augmentedimage.rendering.AugmentedImageRenderer
@@ -45,14 +51,23 @@ import com.google.ar.core.examples.java.common.helpers.FullScreenHelper
 import com.google.ar.core.examples.java.common.helpers.SnackbarHelper
 import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
+import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
+import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
+import com.google.mlkit.vision.objects.DetectedObject
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.ObjectDetector
+import com.google.mlkit.vision.objects.ObjectDetectorOptionsBase
+import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import java.io.IOException
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /**
  * This app extends the HelloAR Java app to include image tracking functionality.
@@ -67,7 +82,6 @@ import javax.microedition.khronos.opengles.GL10
 class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     // Rendering. The Renderers are created here, and initialized when the GL surface is created.
     private lateinit var surfaceView: GLSurfaceView
-    private lateinit var fitToScanView: ImageView
     private var glideRequestManager: RequestManager? = null
 
     private var installRequested = false
@@ -76,20 +90,17 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val messageSnackbarHelper = SnackbarHelper()
     private var displayRotationHelper: DisplayRotationHelper? = null
     private val trackingStateHelper = TrackingStateHelper(this)
+    private lateinit var objectDetector: MLKitObjectDetector
 
     private val backgroundRenderer = BackgroundRenderer()
     private val augmentedImageRenderer = AugmentedImageRenderer()
 
     private var shouldConfigureSession = false
 
-    // Augmented image configuration and rendering.
-    // Load a single image (true) or a pre-generated image database (false).
-    private val useSingleImage = false
-
     // Augmented image and its associated center pose anchor, keyed by index of the augmented image in
     // the
     // database.
-    private val augmentedImageMap: MutableMap<Int, Pair<AugmentedImage, Anchor>> = HashMap()
+    private val augmentedImageMap: MutableMap<Int, Pair<DetectedObjectResult, Anchor>> = HashMap()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,11 +116,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY)
         surfaceView.setWillNotDraw(false)
 
-        fitToScanView = findViewById(R.id.image_view_fit_to_scan)
-        glideRequestManager = Glide.with(this)
-        glideRequestManager!!
-            .load(Uri.parse("file:///android_asset/fit_to_scan.png"))
-            .into(fitToScanView)
+        objectDetector = MLKitObjectDetector(this)
 
         installRequested = false
     }
@@ -191,8 +198,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
         surfaceView.onResume()
         displayRotationHelper!!.onResume()
-
-        fitToScanView.visibility = View.VISIBLE
     }
 
     public override fun onPause() {
@@ -298,107 +303,93 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun configureSession() {
         val config = Config(session)
         config.setFocusMode(Config.FocusMode.AUTO)
-        if (!setupAugmentedImageDatabase(config)) {
-            messageSnackbarHelper.showError(this, "Could not setup augmented image database")
-        }
         session!!.configure(config)
     }
 
     private fun drawAugmentedImages(
         frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, colorCorrectionRgba: FloatArray
     ) {
-        val updatedAugmentedImages =
-            frame.getUpdatedTrackables(AugmentedImage::class.java)
+        frame.tryAcquireCameraImage()?.let { cameraImage ->
+            val cameraId = session!!.cameraConfig.cameraId
+            val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
+            val detectedObjects = runBlocking(Dispatchers.IO) {
+                objectDetector.analyze(cameraImage, imageRotation)
+            }
+            cameraImage.close()
 
-        // Iterate to update augmentedImageMap, remove elements we cannot draw.
-        for (augmentedImage in updatedAugmentedImages) {
-            when (augmentedImage.trackingState) {
-                TrackingState.PAUSED -> {
-                    // When an image is in PAUSED state, but the camera is not PAUSED, it has been detected,
-                    // but not yet tracked.
-                    val text = String.format("Detected Image %d", augmentedImage.index)
-                    messageSnackbarHelper.showMessage(this, text)
-                }
-
-                TrackingState.TRACKING -> {
-                    // Have to switch to UI Thread to update View.
-                    this.runOnUiThread { fitToScanView.visibility = View.GONE }
-
+            // Iterate to update augmentedImageMap, remove elements we cannot draw.
+            for (augmentedImage in detectedObjects) {
+                createAnchor(augmentedImage.boundingBox.centerX().toFloat(), augmentedImage.boundingBox.centerY().toFloat(), frame, frame.camera)?.let { anchor -> // TODO
                     // Create a new anchor for newly found images.
-                    if (!augmentedImageMap.containsKey(augmentedImage.index)) {
-                        val centerPoseAnchor =
-                            augmentedImage.createAnchor(augmentedImage.centerPose)
-                        augmentedImageMap[augmentedImage.index] =
-                            Pair.create(augmentedImage, centerPoseAnchor)
+                    if (!augmentedImageMap.containsKey(augmentedImage.id)) {
+                        augmentedImageMap[augmentedImage.id] =
+                            Pair.create(augmentedImage, anchor)
                     }
                 }
-
-                TrackingState.STOPPED -> augmentedImageMap.remove(augmentedImage.index)
-                else -> {}
             }
         }
+
+        // TODO remove missing objects
 
         // Draw all images in augmentedImageMap
         for (pair in augmentedImageMap.values) {
             val augmentedImage = pair.first
-            val centerAnchor = augmentedImageMap[augmentedImage.index]!!.second
-            when (augmentedImage.trackingState) {
-                TrackingState.TRACKING -> augmentedImageRenderer.draw(
-                    viewmtx, projmtx, augmentedImage, centerAnchor, colorCorrectionRgba
-                )
+            val centerAnchor = augmentedImageMap[augmentedImage.id]!!.second
 
-                else -> {}
-            }
+            augmentedImageRenderer.draw(
+                viewmtx, projmtx, augmentedImage, centerAnchor, colorCorrectionRgba
+            )
         }
     }
 
-    private fun setupAugmentedImageDatabase(config: Config): Boolean {
-        var augmentedImageDatabase: AugmentedImageDatabase
+    /** Temporary arrays to prevent allocations in [createAnchor]. */
+    private val convertFloats = FloatArray(4)
+    private val convertFloatsOut = FloatArray(4)
 
-        // There are two ways to configure an AugmentedImageDatabase:
-        // 1. Add Bitmap to DB directly
-        // 2. Load a pre-built AugmentedImageDatabase
-        // Option 2) has
-        // * shorter setup time
-        // * doesn't require images to be packaged in apk.
-        if (useSingleImage) {
-            val augmentedImageBitmap = loadAugmentedImageBitmap() ?: return false
+    /**
+     * Create an anchor using (x, y) coordinates in the [Coordinates2d.IMAGE_PIXELS] coordinate space.
+     */
+    fun createAnchor(xImage: Float, yImage: Float, frame: Frame, camera: Camera): Anchor? {
+        // IMAGE_PIXELS -> VIEW
+        convertFloats[0] = xImage
+        convertFloats[1] = yImage
+        frame.transformCoordinates2d(
+            Coordinates2d.IMAGE_PIXELS,
+            convertFloats,
+            Coordinates2d.VIEW,
+            convertFloatsOut
+        )
 
-            augmentedImageDatabase = AugmentedImageDatabase(session)
-            augmentedImageDatabase.addImage("image_name", augmentedImageBitmap)
-            // If the physical size of the image is known, you can instead use:
-            //     augmentedImageDatabase.addImage("image_name", augmentedImageBitmap, widthInMeters);
-            // This will improve the initial detection speed. ARCore will still actively estimate the
-            // physical size of the image as it is viewed from multiple viewpoints.
-        } else {
-            // This is an alternative way to initialize an AugmentedImageDatabase instance,
-            // load a pre-existing augmented image database.
-            try {
-                assets.open("sample_database.imgdb").use { `is` ->
-                    augmentedImageDatabase = AugmentedImageDatabase.deserialize(session, `is`)
-                }
-            } catch (e: IOException) {
-                Log.e(TAG, "IO exception loading augmented image database.", e)
-                return false
+        // Conduct a hit test using the VIEW coordinates
+        val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
+
+        val result = hits.firstOrNull { hit ->
+            when (val trackable = hit.trackable!!) {
+                is Plane ->
+                    trackable.isPoseInPolygon(hit.hitPose) &&
+                            PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
+                is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                is InstantPlacementPoint -> true
+                // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
+                is DepthPoint -> true
+                else -> false
             }
-        }
+        } ?: return null
 
-        config.setAugmentedImageDatabase(augmentedImageDatabase)
-        return true
-    }
-
-    private fun loadAugmentedImageBitmap(): Bitmap? {
-        try {
-            assets.open("default.jpg").use { `is` ->
-                return BitmapFactory.decodeStream(`is`)
-            }
-        } catch (e: IOException) {
-            Log.e(TAG, "IO exception loading augmented image bitmap.", e)
-        }
-        return null
+//    val result = hits.getOrNull(0) ?: return null
+        return result.trackable.createAnchor(result.hitPose)
     }
 
     companion object {
         private val TAG: String = AugmentedImageActivity::class.java.simpleName
     }
 }
+
+fun Frame.tryAcquireCameraImage() =
+    try {
+        acquireCameraImage()
+    } catch (e: NotYetAvailableException) {
+        null
+    } catch (e: Throwable) {
+        throw e
+    }
