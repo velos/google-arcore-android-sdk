@@ -60,6 +60,7 @@ dependencies {
     // MLKit
     implementation 'com.google.mlkit:object-detection:17.0.1'
     implementation 'com.google.mlkit:object-detection-custom:17.0.1'
+    implementation 'javax.vecmath:vecmath:1.5.2'
 
     // Glide - An image loading and caching library for Android
     // https://github.com/bumptech/glide

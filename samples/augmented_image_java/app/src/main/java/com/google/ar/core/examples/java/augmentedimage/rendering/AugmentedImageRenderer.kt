@@ -21,9 +21,13 @@ import android.util.Log
 import com.google.ar.core.Anchor
 import com.google.ar.core.AugmentedImage
 import com.google.ar.core.Pose
+import com.google.ar.core.dependencies.f
+import com.google.ar.core.dependencies.i
 import com.google.ar.core.examples.java.augmentedimage.DetectedObjectResult
+import com.google.ar.core.examples.java.augmentedimage.LineUtils
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import java.io.IOException
+import javax.vecmath.Vector2f
 
 /** Renders an augmented image.  */
 class AugmentedImageRenderer {
@@ -69,6 +73,26 @@ class AugmentedImageRenderer {
         Log.d(TAG, "drawing $centerAnchor")
         val tintColor =
             convertHexToColor(TINT_COLORS_HEX[0])
+
+        val coordinates = listOf(
+            floatArrayOf(augmentedImage.boundingBox.left.toFloat(), augmentedImage.boundingBox.top.toFloat()),
+            floatArrayOf(augmentedImage.boundingBox.right.toFloat(), augmentedImage.boundingBox.top.toFloat()),
+            floatArrayOf(augmentedImage.boundingBox.right.toFloat(), augmentedImage.boundingBox.bottom.toFloat()),
+            floatArrayOf(augmentedImage.boundingBox.left.toFloat(), augmentedImage.boundingBox.bottom.toFloat()),
+        )
+
+        val worldCoords = coordinates.mapIndexed { index, point ->
+            LineUtils.GetWorldCoords(
+                Vector2f(point),
+                480f,
+                640f,
+                projectionMatrix,
+                viewMatrix
+            ).also {
+                Log.d("carloss", "$index: (${coordinates[index][0]}, ${coordinates[index][1]}) => (${it.x}, ${it.y}, ${it.z})")
+            }
+        }
+
 
         val xRadius = 0.10795f // TODO calculate radius dynamically
         val yRadius = 0.1397f
