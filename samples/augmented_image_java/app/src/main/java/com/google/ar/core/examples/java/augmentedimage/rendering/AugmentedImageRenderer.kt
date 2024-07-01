@@ -70,7 +70,7 @@ class AugmentedImageRenderer {
         val tintColor =
             convertHexToColor(TINT_COLORS_HEX[0])
 
-        val xRadius = 0.10795f
+        val xRadius = 0.10795f // TODO calculate radius dynamically
         val yRadius = 0.1397f
 
         val localBoundaryPoses = arrayOf(

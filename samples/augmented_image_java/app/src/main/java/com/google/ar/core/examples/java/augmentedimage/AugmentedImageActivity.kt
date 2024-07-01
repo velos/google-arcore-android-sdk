@@ -15,25 +15,15 @@
  */
 package com.google.ar.core.examples.java.augmentedimage
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.net.Uri
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
-import android.util.Pair
-import android.view.View
-import android.widget.ImageView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.bumptech.glide.Glide
-import com.bumptech.glide.RequestManager
 import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.ArCoreApk.InstallStatus
-import com.google.ar.core.AugmentedImage
-import com.google.ar.core.AugmentedImageDatabase
 import com.google.ar.core.Camera
 import com.google.ar.core.Config
 import com.google.ar.core.Coordinates2d
@@ -43,7 +33,6 @@ import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.google.ar.core.Point
 import com.google.ar.core.Session
-import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.augmentedimage.rendering.AugmentedImageRenderer
 import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper
 import com.google.ar.core.examples.java.common.helpers.DisplayRotationHelper
@@ -58,15 +47,9 @@ import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
-import com.google.mlkit.vision.objects.DetectedObject
-import com.google.mlkit.vision.objects.ObjectDetection
-import com.google.mlkit.vision.objects.ObjectDetector
-import com.google.mlkit.vision.objects.ObjectDetectorOptionsBase
-import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import java.io.IOException
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -82,7 +65,6 @@ import kotlinx.coroutines.runBlocking
 class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     // Rendering. The Renderers are created here, and initialized when the GL surface is created.
     private lateinit var surfaceView: GLSurfaceView
-    private var glideRequestManager: RequestManager? = null
 
     private var installRequested = false
 
@@ -96,11 +78,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val augmentedImageRenderer = AugmentedImageRenderer()
 
     private var shouldConfigureSession = false
-
-    // Augmented image and its associated center pose anchor, keyed by index of the augmented image in
-    // the
-    // database.
-    private val augmentedImageMap: MutableMap<Int, Pair<DetectedObjectResult, Anchor>> = HashMap()
+    private var detectedObject: DetectedObject? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -303,42 +281,60 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun configureSession() {
         val config = Config(session)
         config.setFocusMode(Config.FocusMode.AUTO)
+        config.setDepthMode(Config.DepthMode.AUTOMATIC)
+        config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL)
         session!!.configure(config)
     }
 
     private fun drawAugmentedImages(
         frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, colorCorrectionRgba: FloatArray
     ) {
-        frame.tryAcquireCameraImage()?.let { cameraImage ->
-            val cameraId = session!!.cameraConfig.cameraId
-            val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
-            val detectedObjects = runBlocking(Dispatchers.IO) {
-                objectDetector.analyze(cameraImage, imageRotation)
-            }
-            cameraImage.close()
+        val cameraId = session!!.cameraConfig.cameraId
+        val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
+        runBlocking {
+            Log.d("carlos", "detecting objects...")
+            objectDetector.analyze(frame, imageRotation)?.let { detectedObjectResult ->
+                // Detected an object
+                if (detectedObject?.detectedObjectResult != detectedObjectResult) {
+                    // Object is new
+                    Log.d("carlos", "detected a new object $detectedObjectResult")
 
-            // Iterate to update augmentedImageMap, remove elements we cannot draw.
-            for (augmentedImage in detectedObjects) {
-                createAnchor(augmentedImage.boundingBox.centerX().toFloat(), augmentedImage.boundingBox.centerY().toFloat(), frame, frame.camera)?.let { anchor -> // TODO
-                    // Create a new anchor for newly found images.
-                    if (!augmentedImageMap.containsKey(augmentedImage.id)) {
-                        augmentedImageMap[augmentedImage.id] =
-                            Pair.create(augmentedImage, anchor)
-                    }
+                    detectedObject?.anchor?.detach()
+                    detectedObject = DetectedObject(detectedObjectResult)
+                } else {
+                // else same object, do nothing
+                    Log.d("carlos", "detected existing object $detectedObjectResult")
                 }
+            } ?: run {
+                // No object detected, remove anchor
+                Log.d("carlos", "no object detected")
+                detectedObject?.anchor?.detach()
+                detectedObject = null
             }
         }
 
-        // TODO remove missing objects
+        detectedObject?.let { detectedObject ->
+            if (detectedObject.anchor == null) {
+                Log.d("carlos", "creating anchor for $detectedObject")
+                detectedObject.anchor = createAnchor(
+                    detectedObject.detectedObjectResult.boundingBox.centerX().toFloat(),
+                    detectedObject.detectedObjectResult.boundingBox.centerY().toFloat(),
+                    frame,
+                    frame.camera
+                )
+            } else {
+                Log.d("carlos", "existing anchor for $detectedObject")
+            }
 
-        // Draw all images in augmentedImageMap
-        for (pair in augmentedImageMap.values) {
-            val augmentedImage = pair.first
-            val centerAnchor = augmentedImageMap[augmentedImage.id]!!.second
-
-            augmentedImageRenderer.draw(
-                viewmtx, projmtx, augmentedImage, centerAnchor, colorCorrectionRgba
-            )
+            detectedObject.anchor?.let { anchor ->
+                // Create a new anchor for newly found images.
+                Log.d("carlos", "drawing anchor for $detectedObject")
+                augmentedImageRenderer.draw(
+                    viewmtx, projmtx, detectedObject.detectedObjectResult, anchor, colorCorrectionRgba
+                )
+            } ?: run {
+                Log.d("carlos", "no anchor for $detectedObject")
+            }
         }
     }
 
@@ -393,3 +389,8 @@ fun Frame.tryAcquireCameraImage() =
     } catch (e: Throwable) {
         throw e
     }
+
+data class DetectedObject(
+    val detectedObjectResult: DetectedObjectResult,
+    var anchor: Anchor? = null
+)
