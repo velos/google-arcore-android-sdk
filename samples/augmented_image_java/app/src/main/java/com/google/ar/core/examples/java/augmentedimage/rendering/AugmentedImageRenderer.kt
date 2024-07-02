@@ -71,8 +71,7 @@ class AugmentedImageRenderer {
         viewMatrix: FloatArray,
         projectionMatrix: FloatArray,
         centerAnchor: Anchor,
-        extentX: Float,
-        extentZ: Float,
+        cornerAnchors: List<Anchor>,
         colorCorrectionRgba: FloatArray,
     ) {
         Log.d(TAG, "drawing $centerAnchor")
@@ -87,28 +86,28 @@ class AugmentedImageRenderer {
 //            viewMatrix
 //        )
 
-        val localBoundaryPoses = listOf(
-            Pose.makeTranslation(
-                -0.5f * extentX,
-                0f,
-                -0.5f * extentZ,
-            ),
-            Pose.makeTranslation(
-                0.5f * extentX,
-                0f,
-                -0.5f * extentZ,
-            ),
-            Pose.makeTranslation(
-                0.5f * extentX,
-                0f,
-                0.5f * extentZ,
-            ),
-            Pose.makeTranslation(
-                -0.5f * extentX,
-                0f,
-                0.5f * extentZ,
-            ),
-        )
+//        val localBoundaryPoses = listOf(
+//            Pose.makeTranslation(
+//                -0.5f * extentX,
+//                0f,
+//                -0.5f * extentZ,
+//            ),
+//            Pose.makeTranslation(
+//                0.5f * extentX,
+//                0f,
+//                -0.5f * extentZ,
+//            ),
+//            Pose.makeTranslation(
+//                0.5f * extentX,
+//                0f,
+//                0.5f * extentZ,
+//            ),
+//            Pose.makeTranslation(
+//                -0.5f * extentX,
+//                0f,
+//                0.5f * extentZ,
+//            ),
+//        )
 
 //
 //        val xRadius = 0.10795f // TODO calculate radius dynamically
@@ -140,7 +139,7 @@ class AugmentedImageRenderer {
         val anchorPose = centerAnchor.pose
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
-            worldBoundaryPoses[i] = anchorPose.compose(localBoundaryPoses[i])
+            worldBoundaryPoses[i] = cornerAnchors[i].pose
         }
 
         val scaleFactor = 1.0f
@@ -162,6 +161,10 @@ class AugmentedImageRenderer {
         worldBoundaryPoses[3]!!.toMatrix(modelMatrix, 0)
         imageFrameLowerLeft.updateModelMatrix(modelMatrix, scaleFactor)
         imageFrameLowerLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
+
+//        anchorPose.toMatrix(modelMatrix, 0)
+//        imageFrameUpperLeft.updateModelMatrix(modelMatrix, scaleFactor)
+//        imageFrameUpperLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
     }
 
     companion object {

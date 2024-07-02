@@ -285,6 +285,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         config.setFocusMode(Config.FocusMode.AUTO)
         config.setDepthMode(Config.DepthMode.AUTOMATIC)
         config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL)
+        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
         session!!.configure(config)
     }
 
@@ -325,39 +326,21 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 )?.let { anchor ->
                     Log.d("carlos", "created anchor for $detectedObject")
 
-                    val coordinates = listOf(
+                    val distance = PlaneRenderer.calculateDistanceToPlane(anchor.pose, frame.camera.pose)
+
+                    val cornerAnchors = listOf(
                         floatArrayOf(detectedObject.detectedObjectResult.boundingBox.left.toFloat(), detectedObject.detectedObjectResult.boundingBox.top.toFloat()),
+                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.right.toFloat(), detectedObject.detectedObjectResult.boundingBox.top.toFloat()),
                         floatArrayOf(detectedObject.detectedObjectResult.boundingBox.right.toFloat(), detectedObject.detectedObjectResult.boundingBox.bottom.toFloat()),
-                    ).map {
-                        convertFloats[0] = it[0]
-                        convertFloats[1] = it[1]
-                        frame.transformCoordinates2d(
-                            Coordinates2d.IMAGE_PIXELS,
-                            convertFloats,
-                            Coordinates2d.VIEW,
-                            convertFloatsOut
-                        )
-                        floatArrayOf(convertFloatsOut[0], convertFloatsOut[1])
+                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.left.toFloat(), detectedObject.detectedObjectResult.boundingBox.bottom.toFloat()),
+                    ).mapNotNull {
+                        createCornerAnchor(it[0], it[1], frame, distance)
                     }
 
-                    Log.d("carloss", "${surfaceView.width} x ${surfaceView.height}")
-
-                    val worldCoords = coordinates.mapIndexed { index, point ->
-                        LineUtils.GetWorldCoords(
-                            Vector2f(point),
-                            surfaceView.width.toFloat(),
-                            surfaceView.height.toFloat(),
-                            projmtx,
-                            viewmtx,
-                            abs(anchor.pose.ty())
-                        ).also {
-                            Log.d("carloss", "$index: (${coordinates[index][0]}, ${coordinates[index][1]}) => (${it.x}, ${it.y}, ${it.z}), ty=${anchor.pose.ty()}")
-                        }
+                    if (cornerAnchors.size == 4) {
+                        detectedObject.anchor = anchor
+                        detectedObject.cornerAnchors = cornerAnchors
                     }
-
-                    detectedObject.anchor = anchor
-                    detectedObject.extentX = abs(worldCoords[1].x - worldCoords[0].x)
-                    detectedObject.extentZ = abs(worldCoords[1].z - worldCoords[0].z)
                 } ?: run {
                     Log.d("carlos", "no anchor found for $detectedObject")
                 }
@@ -370,7 +353,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 Log.d("carlos", "drawing anchor for $detectedObject")
 
                 augmentedImageRenderer.draw(
-                    viewmtx, projmtx, anchor, detectedObject.extentX, detectedObject.extentZ, colorCorrectionRgba
+                    viewmtx, projmtx, anchor, detectedObject.cornerAnchors!!, colorCorrectionRgba
                 )
             } ?: run {
                 Log.d("carlos", "no anchor for $detectedObject")
@@ -416,6 +399,21 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         return result.trackable.createAnchor(result.hitPose)
     }
 
+    fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame, distance: Float): Anchor? {
+        // IMAGE_PIXELS -> VIEW
+        convertFloats[0] = xImage
+        convertFloats[1] = yImage
+        frame.transformCoordinates2d(
+            Coordinates2d.IMAGE_PIXELS,
+            convertFloats,
+            Coordinates2d.VIEW,
+            convertFloatsOut
+        )
+
+        // Conduct a hit test using the VIEW coordinates
+        return frame.hitTest(convertFloatsOut[0], convertFloatsOut[1]).firstOrNull()?.createAnchor()
+    }
+
     companion object {
         private val TAG: String = AugmentedImageActivity::class.java.simpleName
     }
@@ -433,6 +431,5 @@ fun Frame.tryAcquireCameraImage() =
 data class DetectedObject(
     val detectedObjectResult: DetectedObjectResult,
     var anchor: Anchor? = null,
-    var extentX: Float = 0f,
-    var extentZ: Float = 0f
+    var cornerAnchors: List<Anchor>? = null
 )
