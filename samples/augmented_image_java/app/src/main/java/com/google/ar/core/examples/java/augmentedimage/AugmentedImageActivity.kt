@@ -50,6 +50,8 @@ import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationExceptio
 import java.io.IOException
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import javax.vecmath.Vector2f
+import kotlin.math.abs
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -315,13 +317,50 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
         detectedObject?.let { detectedObject ->
             if (detectedObject.anchor == null) {
-                Log.d("carlos", "creating anchor for $detectedObject")
-                detectedObject.anchor = createAnchor(
+                createAnchor(
                     detectedObject.detectedObjectResult.boundingBox.centerX().toFloat(),
                     detectedObject.detectedObjectResult.boundingBox.centerY().toFloat(),
                     frame,
                     frame.camera
-                )
+                )?.let { anchor ->
+                    Log.d("carlos", "created anchor for $detectedObject")
+
+                    val coordinates = listOf(
+                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.left.toFloat(), detectedObject.detectedObjectResult.boundingBox.top.toFloat()),
+                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.right.toFloat(), detectedObject.detectedObjectResult.boundingBox.bottom.toFloat()),
+                    ).map {
+                        convertFloats[0] = it[0]
+                        convertFloats[1] = it[1]
+                        frame.transformCoordinates2d(
+                            Coordinates2d.IMAGE_PIXELS,
+                            convertFloats,
+                            Coordinates2d.VIEW,
+                            convertFloatsOut
+                        )
+                        floatArrayOf(convertFloatsOut[0], convertFloatsOut[1])
+                    }
+
+                    Log.d("carloss", "${surfaceView.width} x ${surfaceView.height}")
+
+                    val worldCoords = coordinates.mapIndexed { index, point ->
+                        LineUtils.GetWorldCoords(
+                            Vector2f(point),
+                            surfaceView.width.toFloat(),
+                            surfaceView.height.toFloat(),
+                            projmtx,
+                            viewmtx,
+                            abs(anchor.pose.ty())
+                        ).also {
+                            Log.d("carloss", "$index: (${coordinates[index][0]}, ${coordinates[index][1]}) => (${it.x}, ${it.y}, ${it.z}), ty=${anchor.pose.ty()}")
+                        }
+                    }
+
+                    detectedObject.anchor = anchor
+                    detectedObject.extentX = abs(worldCoords[1].x - worldCoords[0].x)
+                    detectedObject.extentZ = abs(worldCoords[1].z - worldCoords[0].z)
+                } ?: run {
+                    Log.d("carlos", "no anchor found for $detectedObject")
+                }
             } else {
                 Log.d("carlos", "existing anchor for $detectedObject")
             }
@@ -329,8 +368,9 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             detectedObject.anchor?.let { anchor ->
                 // Create a new anchor for newly found images.
                 Log.d("carlos", "drawing anchor for $detectedObject")
+
                 augmentedImageRenderer.draw(
-                    viewmtx, projmtx, detectedObject.detectedObjectResult, anchor, colorCorrectionRgba
+                    viewmtx, projmtx, anchor, detectedObject.extentX, detectedObject.extentZ, colorCorrectionRgba
                 )
             } ?: run {
                 Log.d("carlos", "no anchor for $detectedObject")
@@ -392,5 +432,7 @@ fun Frame.tryAcquireCameraImage() =
 
 data class DetectedObject(
     val detectedObjectResult: DetectedObjectResult,
-    var anchor: Anchor? = null
+    var anchor: Anchor? = null,
+    var extentX: Float = 0f,
+    var extentZ: Float = 0f
 )

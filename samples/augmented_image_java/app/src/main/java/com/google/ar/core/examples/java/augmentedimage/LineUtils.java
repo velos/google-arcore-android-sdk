@@ -22,7 +22,7 @@ import javax.vecmath.Vector2f;
 import javax.vecmath.Vector3f;
 
 public class LineUtils {
-    private static final float magicZ = 0.000625f;
+    public static final float MAGIC_Z = 0.000625f;
 
     /**
      * @param touchPoint
@@ -32,7 +32,7 @@ public class LineUtils {
      * @param viewMatrix
      * @return
      */
-    public static Vector3f GetWorldCoords(Vector2f touchPoint, float screenWidth, float screenHeight, float[] projectionMatrix, float[] viewMatrix) {
+    public static Vector3f GetWorldCoords(Vector2f touchPoint, float screenWidth, float screenHeight, float[] projectionMatrix, float[] viewMatrix, float magicZ) {
         Ray touchRay = projectRay(touchPoint, screenWidth, screenHeight, projectionMatrix, viewMatrix);
         touchRay.direction.scale(magicZ);
         touchRay.origin.add(touchRay.direction);

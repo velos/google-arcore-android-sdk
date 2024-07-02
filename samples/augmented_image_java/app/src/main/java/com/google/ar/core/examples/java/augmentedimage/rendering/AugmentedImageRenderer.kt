@@ -19,15 +19,14 @@ import android.content.Context
 import android.opengl.Matrix
 import android.util.Log
 import com.google.ar.core.Anchor
-import com.google.ar.core.AugmentedImage
 import com.google.ar.core.Pose
-import com.google.ar.core.dependencies.f
-import com.google.ar.core.dependencies.i
-import com.google.ar.core.examples.java.augmentedimage.DetectedObjectResult
+import com.google.ar.core.examples.java.augmentedimage.DetectedObject
 import com.google.ar.core.examples.java.augmentedimage.LineUtils
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
+import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import java.io.IOException
 import javax.vecmath.Vector2f
+import javax.vecmath.Vector3f
 
 /** Renders an augmented image.  */
 class AugmentedImageRenderer {
@@ -63,62 +62,80 @@ class AugmentedImageRenderer {
         imageFrameLowerRight.setBlendMode(ObjectRenderer.BlendMode.AlphaBlending)
     }
 
+    fun List<Vector3f>.topLeft() = this[0]
+    fun List<Vector3f>.topRight() = this[1]
+    fun List<Vector3f>.bottomRight() = this[2]
+    fun List<Vector3f>.bottomLeft() = this[3]
+
     fun draw(
-        viewMatrix: FloatArray?,
-        projectionMatrix: FloatArray?,
-        augmentedImage: DetectedObjectResult,
+        viewMatrix: FloatArray,
+        projectionMatrix: FloatArray,
         centerAnchor: Anchor,
-        colorCorrectionRgba: FloatArray?,
+        extentX: Float,
+        extentZ: Float,
+        colorCorrectionRgba: FloatArray,
     ) {
         Log.d(TAG, "drawing $centerAnchor")
-        val tintColor =
-            convertHexToColor(TINT_COLORS_HEX[0])
+        val tintColor = convertHexToColor(TINT_COLORS_HEX[0])
 
-        val coordinates = listOf(
-            floatArrayOf(augmentedImage.boundingBox.left.toFloat(), augmentedImage.boundingBox.top.toFloat()),
-            floatArrayOf(augmentedImage.boundingBox.right.toFloat(), augmentedImage.boundingBox.top.toFloat()),
-            floatArrayOf(augmentedImage.boundingBox.right.toFloat(), augmentedImage.boundingBox.bottom.toFloat()),
-            floatArrayOf(augmentedImage.boundingBox.left.toFloat(), augmentedImage.boundingBox.bottom.toFloat()),
+//        val center = floatArrayOf(c, boundingBox.centerY().toFloat())
+//        val centerWorldCoord = LineUtils.GetWorldCoords(
+//            Vector2f(center),
+//            480f,
+//            640f,
+//            projectionMatrix,
+//            viewMatrix
+//        )
+
+        val localBoundaryPoses = listOf(
+            Pose.makeTranslation(
+                -0.5f * extentX,
+                0f,
+                -0.5f * extentZ,
+            ),
+            Pose.makeTranslation(
+                0.5f * extentX,
+                0f,
+                -0.5f * extentZ,
+            ),
+            Pose.makeTranslation(
+                0.5f * extentX,
+                0f,
+                0.5f * extentZ,
+            ),
+            Pose.makeTranslation(
+                -0.5f * extentX,
+                0f,
+                0.5f * extentZ,
+            ),
         )
 
-        val worldCoords = coordinates.mapIndexed { index, point ->
-            LineUtils.GetWorldCoords(
-                Vector2f(point),
-                480f,
-                640f,
-                projectionMatrix,
-                viewMatrix
-            ).also {
-                Log.d("carloss", "$index: (${coordinates[index][0]}, ${coordinates[index][1]}) => (${it.x}, ${it.y}, ${it.z})")
-            }
-        }
-
-
-        val xRadius = 0.10795f // TODO calculate radius dynamically
-        val yRadius = 0.1397f
-
-        val localBoundaryPoses = arrayOf(
-            Pose.makeTranslation(
-                -xRadius,
-                0.0f,
-                -yRadius
-            ),  // upper left
-            Pose.makeTranslation(
-                xRadius,
-                0.0f,
-                -yRadius
-            ),  // upper right
-            Pose.makeTranslation(
-                xRadius,
-                0.0f,
-                yRadius
-            ),  // lower right
-            Pose.makeTranslation(
-                -xRadius,
-                0.0f,
-                yRadius
-            ) // lower left
-        )
+//
+//        val xRadius = 0.10795f // TODO calculate radius dynamically
+//        val yRadius = 0.1397f
+//
+//        val localBoundaryPoses = arrayOf(
+//            Pose.makeTranslation(
+//                -xRadius,
+//                0.0f,
+//                -yRadius
+//            ),  // upper left
+//            Pose.makeTranslation(
+//                xRadius,
+//                0.0f,
+//                -yRadius
+//            ),  // upper right
+//            Pose.makeTranslation(
+//                xRadius,
+//                0.0f,
+//                yRadius
+//            ),  // lower right
+//            Pose.makeTranslation(
+//                -xRadius,
+//                0.0f,
+//                yRadius
+//            ) // lower left
+//        )
 
         val anchorPose = centerAnchor.pose
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
