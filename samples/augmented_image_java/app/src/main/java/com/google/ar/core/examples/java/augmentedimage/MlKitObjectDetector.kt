@@ -88,9 +88,9 @@ class MLKitObjectDetector(context: Activity) {
             yuvConverter.yuvToRgb(image, this)
         }
     }
-}
 
-data class DetectedObjectResult(
-    val id: Int,
-    val boundingBox: Rect,
-)
+    data class DetectedObjectResult(
+        val id: Int,
+        val boundingBox: Rect,
+    )
+}

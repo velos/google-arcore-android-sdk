@@ -20,7 +20,6 @@ import android.opengl.Matrix
 import android.util.Log
 import com.google.ar.core.Anchor
 import com.google.ar.core.Pose
-import com.google.ar.core.examples.java.augmentedimage.DetectedObject
 import com.google.ar.core.examples.java.augmentedimage.LineUtils
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
@@ -136,14 +135,20 @@ class AugmentedImageRenderer {
 //            ) // lower left
 //        )
 
+        val scaleFactor = 1.0f
+        val modelMatrix = FloatArray(16)
+
         val anchorPose = centerAnchor.pose
+
+        anchorPose.toMatrix(modelMatrix, 0)
+        imageFrameUpperLeft.updateModelMatrix(modelMatrix, scaleFactor)
+        imageFrameUpperLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
+//
+//        return
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
             worldBoundaryPoses[i] = cornerAnchors[i].pose
         }
-
-        val scaleFactor = 1.0f
-        val modelMatrix = FloatArray(16)
 
         worldBoundaryPoses[0]!!.toMatrix(modelMatrix, 0)
 //        Matrix.translateM(modelMatrix, 0, -0.5f * augmentedImage.boundingBox.width(), 0f, -0.5f * augmentedImage.boundingBox.height())
@@ -162,9 +167,6 @@ class AugmentedImageRenderer {
         imageFrameLowerLeft.updateModelMatrix(modelMatrix, scaleFactor)
         imageFrameLowerLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
 
-//        anchorPose.toMatrix(modelMatrix, 0)
-//        imageFrameUpperLeft.updateModelMatrix(modelMatrix, scaleFactor)
-//        imageFrameUpperLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
     }
 
     companion object {

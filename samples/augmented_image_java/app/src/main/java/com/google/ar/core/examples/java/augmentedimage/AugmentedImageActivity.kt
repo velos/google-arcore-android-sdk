@@ -29,10 +29,12 @@ import com.google.ar.core.Config
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.DepthPoint
 import com.google.ar.core.Frame
+import com.google.ar.core.HitResult
 import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.google.ar.core.Point
 import com.google.ar.core.Session
+import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.augmentedimage.rendering.AugmentedImageRenderer
 import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper
 import com.google.ar.core.examples.java.common.helpers.DisplayRotationHelper
@@ -42,17 +44,27 @@ import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
+import com.google.ar.core.exceptions.FatalException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
+import com.google.mlkit.vision.objects.DetectedObject
 import java.io.IOException
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import javax.vecmath.Vector2f
 import kotlin.math.abs
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import org.opencv.android.OpenCVLoader
 
 /**
  * This app extends the HelloAR Java app to include image tracking functionality.
@@ -74,16 +86,28 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val messageSnackbarHelper = SnackbarHelper()
     private var displayRotationHelper: DisplayRotationHelper? = null
     private val trackingStateHelper = TrackingStateHelper(this)
-    private lateinit var objectDetector: MLKitObjectDetector
+    private lateinit var objectDetector: OpenCvObjectDetector
 
     private val backgroundRenderer = BackgroundRenderer()
     private val augmentedImageRenderer = AugmentedImageRenderer()
 
     private var shouldConfigureSession = false
-    private var detectedObject: DetectedObject? = null
+    private var detectedObjectResult: OpenCvObjectDetector.DetectedObjectResult? = null
+    private var detectedObjectAnchor: DetectedObjectAnchor? = null
+    private val coroutineScope = MainScope()
+    private var job: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        if (OpenCVLoader.initLocal()) {
+            Log.i(TAG, "OpenCV loaded successfully")
+        } else {
+            Log.e(TAG, "OpenCV initialization failed!")
+            Toast.makeText(this, "OpenCV initialization failed!", Toast.LENGTH_LONG)
+                .show()
+        }
+
         setContentView(R.layout.activity_main)
         surfaceView = findViewById(R.id.surfaceview)
         displayRotationHelper = DisplayRotationHelper( /*context=*/this)
@@ -96,7 +120,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY)
         surfaceView.setWillNotDraw(false)
 
-        objectDetector = MLKitObjectDetector(this)
+        objectDetector = OpenCvObjectDetector(this)
 
         installRequested = false
     }
@@ -110,6 +134,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             session!!.close()
             session = null
         }
+
+        objectDetector.stop()
 
         super.onDestroy()
     }
@@ -285,7 +311,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         config.setFocusMode(Config.FocusMode.AUTO)
         config.setDepthMode(Config.DepthMode.AUTOMATIC)
         config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL)
-        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
+//        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
+        config.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE)
         session!!.configure(config)
     }
 
@@ -294,72 +321,75 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     ) {
         val cameraId = session!!.cameraConfig.cameraId
         val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
-        runBlocking {
             Log.d("carlos", "detecting objects...")
-            objectDetector.analyze(frame, imageRotation)?.let { detectedObjectResult ->
-                // Detected an object
-                if (detectedObject?.detectedObjectResult != detectedObjectResult) {
+
+            detectedObjectAnchor?.let { anchors ->
+                if (anchors.anchor.trackingState != TrackingState.TRACKING) {
+                    Log.d("carlos", "lost tracking $anchors, removing anchor")
+                    anchors.detach()
+                    detectedObjectResult = null
+                    this@AugmentedImageActivity.detectedObjectAnchor = null
+                }
+            }
+
+            if (detectedObjectResult == null && job?.isActive != true) {
+                frame.tryAcquireCameraImage()?.let { image ->
+
+                    // `image` is in YUV
+                    // (https://developers.google.com/ar/reference/java/com/google/ar/core/Frame#acquireCameraImage()),
+                    val convertYuv = objectDetector.convertYuv(image)
+
+                    image.close()
+                    // TODO This has to be done async. but by the time this completes, the current frame is out of date & finding the anchor is no longer accurate.
+                    // finding the anchor in the coroutine is not possible, because the frame is no longer available.
+                    job = coroutineScope.launch {
+                        detectedObjectResult = objectDetector.analyze(convertYuv, imageRotation)
+                    }
+                }
+            }
+
+            detectedObjectResult?.let { detectedObjectResult ->
+                    // Detected an object
                     // Object is new
                     Log.d("carlos", "detected a new object $detectedObjectResult")
 
-                    detectedObject?.anchor?.detach()
-                    detectedObject = DetectedObject(detectedObjectResult)
-                } else {
-                // else same object, do nothing
-                    Log.d("carlos", "detected existing object $detectedObjectResult")
-                }
-            } ?: run {
-                // No object detected, remove anchor
-                Log.d("carlos", "no object detected")
-                detectedObject?.anchor?.detach()
-                detectedObject = null
-            }
-        }
+                if (detectedObjectAnchor == null) {
+                    createAnchor(
+                        detectedObjectResult.center[0],
+                        detectedObjectResult.center[1],
+                        frame,
+                        frame.camera
+                    )?.let { anchor ->
+                        Log.d("carlos", "created anchor for $detectedObjectResult")
 
-        detectedObject?.let { detectedObject ->
-            if (detectedObject.anchor == null) {
-                createAnchor(
-                    detectedObject.detectedObjectResult.boundingBox.centerX().toFloat(),
-                    detectedObject.detectedObjectResult.boundingBox.centerY().toFloat(),
-                    frame,
-                    frame.camera
-                )?.let { anchor ->
-                    Log.d("carlos", "created anchor for $detectedObject")
+//                        val distance = PlaneRenderer.calculateDistanceToPlane(anchor.pose, frame.camera.pose)
+//
+                        val cornerAnchors = detectedObjectResult.contourPoints.mapNotNull {
+                            createAnchor(it.x.toFloat(), it.y.toFloat(), frame, frame.camera)
+                        }
 
-                    val distance = PlaneRenderer.calculateDistanceToPlane(anchor.pose, frame.camera.pose)
+                        if (cornerAnchors.size == 4) {
+                            Log.d("carlos", "created corner anchors for $detectedObjectResult")
+                            detectedObjectAnchor = DetectedObjectAnchor(
+                                anchor = anchor.createAnchor(),
+                                cornerAnchors = cornerAnchors.map { it.createAnchor() }
+                            )
+                        }
 
-                    val cornerAnchors = listOf(
-                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.left.toFloat(), detectedObject.detectedObjectResult.boundingBox.top.toFloat()),
-                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.right.toFloat(), detectedObject.detectedObjectResult.boundingBox.top.toFloat()),
-                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.right.toFloat(), detectedObject.detectedObjectResult.boundingBox.bottom.toFloat()),
-                        floatArrayOf(detectedObject.detectedObjectResult.boundingBox.left.toFloat(), detectedObject.detectedObjectResult.boundingBox.bottom.toFloat()),
-                    ).mapNotNull {
-                        createCornerAnchor(it[0], it[1], frame, distance)
+                    } ?: run {
+                        Log.d("carlos", "no anchor found for $detectedObjectResult")
                     }
-
-                    if (cornerAnchors.size == 4) {
-                        detectedObject.anchor = anchor
-                        detectedObject.cornerAnchors = cornerAnchors
-                    }
-                } ?: run {
-                    Log.d("carlos", "no anchor found for $detectedObject")
                 }
-            } else {
-                Log.d("carlos", "existing anchor for $detectedObject")
-            }
+                }
 
-            detectedObject.anchor?.let { anchor ->
-                // Create a new anchor for newly found images.
-                Log.d("carlos", "drawing anchor for $detectedObject")
-
+            detectedObjectAnchor?.let { anchors ->
                 augmentedImageRenderer.draw(
-                    viewmtx, projmtx, anchor, detectedObject.cornerAnchors!!, colorCorrectionRgba
+                    viewmtx, projmtx, anchors.anchor, anchors.cornerAnchors, colorCorrectionRgba
                 )
-            } ?: run {
-                Log.d("carlos", "no anchor for $detectedObject")
             }
-        }
     }
+
+
 
     /** Temporary arrays to prevent allocations in [createAnchor]. */
     private val convertFloats = FloatArray(4)
@@ -368,7 +398,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     /**
      * Create an anchor using (x, y) coordinates in the [Coordinates2d.IMAGE_PIXELS] coordinate space.
      */
-    fun createAnchor(xImage: Float, yImage: Float, frame: Frame, camera: Camera): Anchor? {
+    fun createAnchor(xImage: Float, yImage: Float, frame: Frame, camera: Camera): HitResult? {
         // IMAGE_PIXELS -> VIEW
         convertFloats[0] = xImage
         convertFloats[1] = yImage
@@ -378,6 +408,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             Coordinates2d.VIEW,
             convertFloatsOut
         )
+
+        Log.d("carlos", "hitTest (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
 
         // Conduct a hit test using the VIEW coordinates
         val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
@@ -396,10 +428,10 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         } ?: return null
 
 //    val result = hits.getOrNull(0) ?: return null
-        return result.trackable.createAnchor(result.hitPose)
+        return result
     }
 
-    fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame, distance: Float): Anchor? {
+    fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame): HitResult? {
         // IMAGE_PIXELS -> VIEW
         convertFloats[0] = xImage
         convertFloats[1] = yImage
@@ -411,7 +443,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         )
 
         // Conduct a hit test using the VIEW coordinates
-        return frame.hitTest(convertFloatsOut[0], convertFloatsOut[1]).firstOrNull()?.createAnchor()
+        return frame.hitTest(convertFloatsOut[0], convertFloatsOut[1]).firstOrNull()
     }
 
     companion object {
@@ -428,8 +460,12 @@ fun Frame.tryAcquireCameraImage() =
         throw e
     }
 
-data class DetectedObject(
-    val detectedObjectResult: DetectedObjectResult,
-    var anchor: Anchor? = null,
-    var cornerAnchors: List<Anchor>? = null
-)
+data class DetectedObjectAnchor(
+    val anchor: Anchor,
+    val cornerAnchors: List<Anchor>
+) {
+    fun detach() {
+        anchor.detach()
+        cornerAnchors.forEach { it.detach() }
+    }
+}
