@@ -70,7 +70,8 @@ class AugmentedImageRenderer {
         viewMatrix: FloatArray,
         projectionMatrix: FloatArray,
         centerAnchor: Anchor,
-        cornerAnchors: List<Anchor>,
+        centerPoint: Vector3f,
+        cornerPoints: List<Vector3f>,
         colorCorrectionRgba: FloatArray,
     ) {
         Log.d(TAG, "drawing $centerAnchor")
@@ -85,29 +86,15 @@ class AugmentedImageRenderer {
 //            viewMatrix
 //        )
 
-//        val localBoundaryPoses = listOf(
-//            Pose.makeTranslation(
-//                -0.5f * extentX,
-//                0f,
-//                -0.5f * extentZ,
-//            ),
-//            Pose.makeTranslation(
-//                0.5f * extentX,
-//                0f,
-//                -0.5f * extentZ,
-//            ),
-//            Pose.makeTranslation(
-//                0.5f * extentX,
-//                0f,
-//                0.5f * extentZ,
-//            ),
-//            Pose.makeTranslation(
-//                -0.5f * extentX,
-//                0f,
-//                0.5f * extentZ,
-//            ),
-//        )
+        val anchorPose = centerAnchor.pose
 
+        val localBoundaryPoses = cornerPoints.map {
+            Pose.makeTranslation(
+                it.x - centerPoint.x,
+                0f,
+                it.z - centerPoint.z,
+            )
+        }
 //
 //        val xRadius = 0.10795f // TODO calculate radius dynamically
 //        val yRadius = 0.1397f
@@ -138,7 +125,6 @@ class AugmentedImageRenderer {
         val scaleFactor = 1.0f
         val modelMatrix = FloatArray(16)
 
-        val anchorPose = centerAnchor.pose
 
         anchorPose.toMatrix(modelMatrix, 0)
         imageFrameUpperLeft.updateModelMatrix(modelMatrix, scaleFactor)
@@ -147,7 +133,7 @@ class AugmentedImageRenderer {
 //        return
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
-            worldBoundaryPoses[i] = cornerAnchors[i].pose
+            worldBoundaryPoses[i] = anchorPose.compose(localBoundaryPoses[i])
         }
 
         worldBoundaryPoses[0]!!.toMatrix(modelMatrix, 0)

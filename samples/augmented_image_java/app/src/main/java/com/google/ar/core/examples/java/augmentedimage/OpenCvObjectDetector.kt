@@ -51,7 +51,7 @@ class OpenCvObjectDetector(context: Activity) {
         openCvDocumentDetector.release()
     }
 
-    suspend fun analyze(convertYuv: Bitmap, imageRotation: Int): DetectedObjectResult? {
+    suspend fun analyze(convertYuv: Bitmap, imageRotation: Int): List<Point>? {
 //        val image = frame.tryAcquireCameraImage() ?: return null
 //
 //            // `image` is in YUV
@@ -60,9 +60,9 @@ class OpenCvObjectDetector(context: Activity) {
 //
 //            image.close()
 
-            val targetWidth = 640f
-            val scaleFactor = targetWidth / convertYuv.width.toFloat()
-            val targetHeight = convertYuv.height.toFloat() * scaleFactor
+//            val targetWidth = 640f
+//            val scaleFactor = targetWidth / convertYuv.width.toFloat()
+//            val targetHeight = convertYuv.height.toFloat() * scaleFactor
 
 //    val scaledBitmap = Bitmap.createScaledBitmap(
 //      convertYuv,
@@ -93,9 +93,9 @@ class OpenCvObjectDetector(context: Activity) {
             it.rotateCoordinates(rotatedImage.width, rotatedImage.height, imageRotation)
         }
 
-        contourPoints.forEachIndexed { index, point ->
-            Log.d("carloss", "contourPoint $index: (${point.x}, ${point.y})")
-        }
+//        contourPoints.forEachIndexed { index, point ->
+//            Log.d("carloss", "contourPoint $index: (${point.x}, ${point.y})")
+//        }
 
         if (contourPoints.size == 4) {
             val orderedPoints = contourPoints.ordered()
@@ -106,10 +106,7 @@ class OpenCvObjectDetector(context: Activity) {
                 orderedPoints[0].y + extentY / 2f
             )
 
-            return DetectedObjectResult(
-                contourPoints = orderedPoints,
-                center = center
-            )
+            return orderedPoints
         } else {
             return null
         }
@@ -145,8 +142,4 @@ class OpenCvObjectDetector(context: Activity) {
         }
     }
 
-    data class DetectedObjectResult(
-        val contourPoints: List<Point>,
-        val center: FloatArray
-    )
 }

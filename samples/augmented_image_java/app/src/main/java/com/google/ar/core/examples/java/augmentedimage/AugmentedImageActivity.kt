@@ -55,6 +55,7 @@ import java.io.IOException
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import javax.vecmath.Vector2f
+import javax.vecmath.Vector3f
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -92,7 +93,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val augmentedImageRenderer = AugmentedImageRenderer()
 
     private var shouldConfigureSession = false
-    private var detectedObjectResult: OpenCvObjectDetector.DetectedObjectResult? = null
     private var detectedObjectAnchor: DetectedObjectAnchor? = null
     private val coroutineScope = MainScope()
     private var job: Job? = null
@@ -260,6 +260,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, width, height)
     }
 
+    private var currentFrame: Frame? = null
+
     override fun onDrawFrame(gl: GL10) {
         // Clear screen to notify driver it should not load any pixels from previous frame.
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
@@ -319,77 +321,116 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun drawAugmentedImages(
         frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, colorCorrectionRgba: FloatArray
     ) {
+        currentFrame = frame
         val cameraId = session!!.cameraConfig.cameraId
         val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
-            Log.d("carlos", "detecting objects...")
+//            Log.d("carlos", "detecting objects...")
 
             detectedObjectAnchor?.let { anchors ->
                 if (anchors.anchor.trackingState != TrackingState.TRACKING) {
                     Log.d("carlos", "lost tracking $anchors, removing anchor")
                     anchors.detach()
-                    detectedObjectResult = null
                     this@AugmentedImageActivity.detectedObjectAnchor = null
                 }
             }
 
-            if (detectedObjectResult == null && job?.isActive != true) {
-                frame.tryAcquireCameraImage()?.let { image ->
+            if (detectedObjectAnchor == null && job?.isActive != true) {
+                Log.d("carloss", "no existing anchor && no lock")
 
-                    // `image` is in YUV
-                    // (https://developers.google.com/ar/reference/java/com/google/ar/core/Frame#acquireCameraImage()),
+                frame.tryAcquireCameraImage()?.let { image ->
                     val convertYuv = objectDetector.convertYuv(image)
 
                     image.close()
-                    // TODO This has to be done async. but by the time this completes, the current frame is out of date & finding the anchor is no longer accurate.
-                    // finding the anchor in the coroutine is not possible, because the frame is no longer available.
-                    job = coroutineScope.launch {
-                        detectedObjectResult = objectDetector.analyze(convertYuv, imageRotation)
+
+                    val centerPoint = floatArrayOf(convertYuv.width / 2f, convertYuv.height / 2f)
+                    createAnchor(centerPoint[0], centerPoint[1], frame, frame.camera)?.let { centerAnchor ->
+                        Log.d("carlos", "found center anchor $centerPoint")
+                        val anchor = centerAnchor.createAnchor()
+
+                        convertFloats[0] = centerPoint[0]
+                        convertFloats[1] = centerPoint[1]
+                        val ty = anchor.pose.ty()
+                        frame.transformCoordinates2d(
+                            Coordinates2d.IMAGE_PIXELS,
+                            convertFloats,
+                            Coordinates2d.VIEW,
+                            convertFloatsOut
+                        )
+                        val worldCenterPoint = LineUtils.GetWorldCoords(
+                            Vector2f(convertFloatsOut),
+                            surfaceView.width.toFloat(),
+                            surfaceView.height.toFloat(),
+                            projmtx,
+                            viewmtx,
+                            ty
+                        )
+
+                        Log.d("carlos", "centerPoint (${centerPoint[0]}, ${centerPoint[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]}) => (${worldCenterPoint.x}, ${worldCenterPoint.y}, ${worldCenterPoint.z})")
+
+                        job = coroutineScope.launch {
+                            objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
+                                Log.d("carlos", "found 4 corners $cornerPoints")
+
+                                // TODO check if centerAnchor is in cornerPoints
+                                if (cornerPoints.isInside(centerPoint[0], centerPoint[1])) {
+                                    Log.d("carlos", "corners contains anchor")
+                                    val worldCornerPoints = cornerPoints.map {
+                                        val convertFloats = FloatArray(4)
+                                        val convertFloatsOut = FloatArray(4)
+
+                                        convertFloats[0] = it.x.toFloat()
+                                        convertFloats[1] = it.y.toFloat()
+                                        currentFrame?.transformCoordinates2d(
+                                            Coordinates2d.IMAGE_PIXELS,
+                                            convertFloats,
+                                            Coordinates2d.VIEW,
+                                            convertFloatsOut
+                                        )
+
+                                        Log.d("carlos", "(${convertFloats[0]}, ${convertFloats[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
+
+                                        LineUtils.GetWorldCoords(
+                                            Vector2f(convertFloatsOut),
+                                            surfaceView.width.toFloat(),
+                                            surfaceView.height.toFloat(),
+                                            projmtx,
+                                            viewmtx,
+                                            ty
+                                        )
+                                    }
+
+                                    Log.d("carlos", "worldCenter = $worldCenterPoint anchor = ${anchor.pose.tx()}, ${anchor.pose.ty()}, ${anchor.pose.tz()}")
+                                    worldCornerPoints.forEachIndexed { index, vector3f ->
+                                        Log.d("carlos", "worldCorner $index: ${vector3f}")
+                                    }
+
+                                    detectedObjectAnchor = DetectedObjectAnchor(
+                                        anchor = anchor,
+                                        centerPoint = worldCenterPoint,
+                                        cornerPoints = worldCornerPoints
+                                    )
+                                }
+                            } ?: run {
+                                Log.d("carlos", "no object detected")
+                                anchor.detach()
+                            }
+                        }
+                    } ?: run {
+                        Log.d("carlos", "no anchor detected")
                     }
                 }
             }
 
-            detectedObjectResult?.let { detectedObjectResult ->
+        detectedObjectAnchor?.let { detectedObjectAnchor ->
                     // Detected an object
                     // Object is new
-                    Log.d("carlos", "detected a new object $detectedObjectResult")
+                    Log.d("carloss", "drawing anchor")
 
-                if (detectedObjectAnchor == null) {
-                    createAnchor(
-                        detectedObjectResult.center[0],
-                        detectedObjectResult.center[1],
-                        frame,
-                        frame.camera
-                    )?.let { anchor ->
-                        Log.d("carlos", "created anchor for $detectedObjectResult")
-
-//                        val distance = PlaneRenderer.calculateDistanceToPlane(anchor.pose, frame.camera.pose)
-//
-                        val cornerAnchors = detectedObjectResult.contourPoints.mapNotNull {
-                            createAnchor(it.x.toFloat(), it.y.toFloat(), frame, frame.camera)
-                        }
-
-                        if (cornerAnchors.size == 4) {
-                            Log.d("carlos", "created corner anchors for $detectedObjectResult")
-                            detectedObjectAnchor = DetectedObjectAnchor(
-                                anchor = anchor.createAnchor(),
-                                cornerAnchors = cornerAnchors.map { it.createAnchor() }
-                            )
-                        }
-
-                    } ?: run {
-                        Log.d("carlos", "no anchor found for $detectedObjectResult")
-                    }
-                }
-                }
-
-            detectedObjectAnchor?.let { anchors ->
                 augmentedImageRenderer.draw(
-                    viewmtx, projmtx, anchors.anchor, anchors.cornerAnchors, colorCorrectionRgba
+                    viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.centerPoint, detectedObjectAnchor.cornerPoints, colorCorrectionRgba
                 )
             }
     }
-
-
 
     /** Temporary arrays to prevent allocations in [createAnchor]. */
     private val convertFloats = FloatArray(4)
@@ -409,7 +450,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             convertFloatsOut
         )
 
-        Log.d("carlos", "hitTest (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
+//        Log.d("carlos", "hitTest (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
 
         // Conduct a hit test using the VIEW coordinates
         val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
@@ -451,6 +492,17 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 }
 
+fun List<android.graphics.Point>.isInside(x: Float, y: Float): Boolean {
+    return x > this[0].x
+            && x < this[1].x
+            && x > this[3].x
+            && x < this[2].x
+            && y > this[0].y
+            && y < this[3].y
+            && y > this[1].y
+            && y < this[2].y
+}
+
 fun Frame.tryAcquireCameraImage() =
     try {
         acquireCameraImage()
@@ -462,10 +514,10 @@ fun Frame.tryAcquireCameraImage() =
 
 data class DetectedObjectAnchor(
     val anchor: Anchor,
-    val cornerAnchors: List<Anchor>
+    val centerPoint: Vector3f,
+    val cornerPoints: List<Vector3f>
 ) {
     fun detach() {
         anchor.detach()
-        cornerAnchors.forEach { it.detach() }
     }
 }
