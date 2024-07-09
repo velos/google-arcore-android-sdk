@@ -17,6 +17,7 @@ package com.google.ar.core.examples.java.augmentedimage
 
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.opengl.Matrix
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -33,6 +34,7 @@ import com.google.ar.core.HitResult
 import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.google.ar.core.Point
+import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.augmentedimage.rendering.AugmentedImageRenderer
@@ -44,27 +46,21 @@ import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.FatalException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
-import com.google.mlkit.vision.objects.DetectedObject
 import java.io.IOException
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import javax.vecmath.Vector2f
 import javax.vecmath.Vector3f
 import kotlin.math.abs
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlin.math.atan2
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import org.opencv.android.OpenCVLoader
 
 /**
@@ -326,110 +322,113 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
 //            Log.d("carlos", "detecting objects...")
 
-            detectedObjectAnchor?.let { anchors ->
-                if (anchors.anchor.trackingState != TrackingState.TRACKING) {
-                    Log.d("carlos", "lost tracking $anchors, removing anchor")
-                    anchors.detach()
-                    this@AugmentedImageActivity.detectedObjectAnchor = null
-                }
+        detectedObjectAnchor?.let { anchors ->
+            if (anchors.anchor.trackingState != TrackingState.TRACKING) {
+                Log.d("carlos", "lost tracking $anchors, removing anchor")
+                anchors.detach()
+                this@AugmentedImageActivity.detectedObjectAnchor = null
             }
+        }
 
-            if (detectedObjectAnchor == null && job?.isActive != true) {
-                Log.d("carloss", "no existing anchor && no lock")
+        if (detectedObjectAnchor == null && job?.isActive != true) {
+            Log.d("carloss", "no existing anchor && no lock")
 
-                frame.tryAcquireCameraImage()?.let { image ->
-                    val convertYuv = objectDetector.convertYuv(image)
+            frame.tryAcquireCameraImage()?.let { image ->
+                val convertYuv = objectDetector.convertYuv(image)
+                image.close()
 
-                    image.close()
+                // Check if the center of the view center has a plane
+                val centerPoint = floatArrayOf(convertYuv.width / 2f, convertYuv.height / 2f)
+                createAnchor(centerPoint[0], centerPoint[1], frame, frame.camera)?.let { centerAnchor ->
+                    val anchor = centerAnchor.createAnchor()
+                    Log.d("carlos", "found center anchor (${centerPoint[0]}, ${centerPoint[1]}) ty=${anchor.pose.ty()}")
 
-                    val centerPoint = floatArrayOf(convertYuv.width / 2f, convertYuv.height / 2f)
-                    createAnchor(centerPoint[0], centerPoint[1], frame, frame.camera)?.let { centerAnchor ->
-                        Log.d("carlos", "found center anchor $centerPoint")
-                        val anchor = centerAnchor.createAnchor()
+                    // Convert the center point to world coordinates
+                    convertFloats[0] = centerPoint[0]
+                    convertFloats[1] = centerPoint[1]
+                    val ty = anchor.pose.ty()
+                    frame.transformCoordinates2d(
+                        Coordinates2d.IMAGE_PIXELS,
+                        convertFloats,
+                        Coordinates2d.VIEW,
+                        convertFloatsOut
+                    )
 
-                        convertFloats[0] = centerPoint[0]
-                        convertFloats[1] = centerPoint[1]
-                        val ty = anchor.pose.ty()
-                        frame.transformCoordinates2d(
-                            Coordinates2d.IMAGE_PIXELS,
-                            convertFloats,
-                            Coordinates2d.VIEW,
-                            convertFloatsOut
-                        )
-                        val worldCenterPoint = LineUtils.GetWorldCoords(
-                            Vector2f(convertFloatsOut),
-                            surfaceView.width.toFloat(),
-                            surfaceView.height.toFloat(),
-                            projmtx,
-                            viewmtx,
-                            ty
-                        )
+                    val worldCenterPoint = LineUtils.GetWorldCoords(
+                        Vector2f(convertFloatsOut),
+                        surfaceView.width.toFloat(),
+                        surfaceView.height.toFloat(),
+                        projmtx,
+                        viewmtx,
+                        ty
+                    )
 
-                        Log.d("carlos", "centerPoint (${centerPoint[0]}, ${centerPoint[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]}) => (${worldCenterPoint.x}, ${worldCenterPoint.y}, ${worldCenterPoint.z})")
+                    Log.d("carlos", "centerPoint (${centerPoint[0]}, ${centerPoint[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]}) => (${worldCenterPoint.x}, ${worldCenterPoint.y}, ${worldCenterPoint.z})")
 
-                        job = coroutineScope.launch {
-                            objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
-                                Log.d("carlos", "found 4 corners $cornerPoints")
+                    job = coroutineScope.launch {
+                        // Check if the current view has a document
+                        objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
+                            Log.d("carlos", "found 4 corners $cornerPoints")
 
-                                // TODO check if centerAnchor is in cornerPoints
-                                if (cornerPoints.isInside(centerPoint[0], centerPoint[1])) {
-                                    Log.d("carlos", "corners contains anchor")
-                                    val worldCornerPoints = cornerPoints.map {
-                                        val convertFloats = FloatArray(4)
-                                        val convertFloatsOut = FloatArray(4)
+                            // check if centerAnchor is in cornerPoints
+                            if (cornerPoints.isInside(centerPoint[0], centerPoint[1])) {
+                                Log.d("carlos", "corners contains anchor")
+                                val worldCornerPoints = cornerPoints.map {
+                                    val convertFloats = FloatArray(4)
+                                    val convertFloatsOut = FloatArray(4)
 
-                                        convertFloats[0] = it.x.toFloat()
-                                        convertFloats[1] = it.y.toFloat()
-                                        currentFrame?.transformCoordinates2d(
-                                            Coordinates2d.IMAGE_PIXELS,
-                                            convertFloats,
-                                            Coordinates2d.VIEW,
-                                            convertFloatsOut
-                                        )
+                                    convertFloats[0] = it.x.toFloat()
+                                    convertFloats[1] = it.y.toFloat()
+                                    currentFrame?.transformCoordinates2d(
+                                        Coordinates2d.IMAGE_PIXELS,
+                                        convertFloats,
+                                        Coordinates2d.VIEW,
+                                        convertFloatsOut
+                                    )
 
-                                        Log.d("carlos", "(${convertFloats[0]}, ${convertFloats[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
+                                    Log.d("carlos", "(${convertFloats[0]}, ${convertFloats[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
 
-                                        LineUtils.GetWorldCoords(
-                                            Vector2f(convertFloatsOut),
-                                            surfaceView.width.toFloat(),
-                                            surfaceView.height.toFloat(),
-                                            projmtx,
-                                            viewmtx,
-                                            ty
-                                        )
-                                    }
-
-                                    Log.d("carlos", "worldCenter = $worldCenterPoint anchor = ${anchor.pose.tx()}, ${anchor.pose.ty()}, ${anchor.pose.tz()}")
-                                    worldCornerPoints.forEachIndexed { index, vector3f ->
-                                        Log.d("carlos", "worldCorner $index: ${vector3f}")
-                                    }
-
-                                    detectedObjectAnchor = DetectedObjectAnchor(
-                                        anchor = anchor,
-                                        centerPoint = worldCenterPoint,
-                                        cornerPoints = worldCornerPoints
+                                    LineUtils.GetWorldCoords(
+                                        Vector2f(convertFloatsOut),
+                                        surfaceView.width.toFloat(),
+                                        surfaceView.height.toFloat(),
+                                        projmtx,
+                                        viewmtx,
+                                        ty
                                     )
                                 }
-                            } ?: run {
-                                Log.d("carlos", "no object detected")
-                                anchor.detach()
+
+                                Log.d("carlos", "worldCenter = $worldCenterPoint anchor = ${anchor.pose.tx()}, ${anchor.pose.ty()}, ${anchor.pose.tz()}")
+                                worldCornerPoints.forEachIndexed { index, vector3f ->
+                                    Log.d("carlos", "worldCorner $index: ${vector3f}")
+                                }
+
+                                detectedObjectAnchor = DetectedObjectAnchor(
+                                    anchor = anchor,
+                                    centerPoint = worldCenterPoint,
+                                    cornerPoints = worldCornerPoints
+                                )
                             }
+                        } ?: run {
+                            Log.d("carlos", "no object detected")
+                            anchor.detach()
                         }
-                    } ?: run {
-                        Log.d("carlos", "no anchor detected")
                     }
+                } ?: run {
+                    Log.d("carlos", "no anchor detected")
                 }
             }
+        }
 
         detectedObjectAnchor?.let { detectedObjectAnchor ->
-                    // Detected an object
-                    // Object is new
-                    Log.d("carloss", "drawing anchor")
+            // Detected an object
+            // Object is new
+            Log.d("carloss", "drawing anchor")
 
-                augmentedImageRenderer.draw(
-                    viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.centerPoint, detectedObjectAnchor.cornerPoints, colorCorrectionRgba
-                )
-            }
+            augmentedImageRenderer.draw(
+                viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.centerPoint, detectedObjectAnchor.cornerPoints, colorCorrectionRgba
+            )
+        }
     }
 
     /** Temporary arrays to prevent allocations in [createAnchor]. */
