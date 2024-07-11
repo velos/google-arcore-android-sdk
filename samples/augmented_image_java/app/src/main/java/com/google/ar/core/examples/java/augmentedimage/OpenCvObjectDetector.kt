@@ -99,12 +99,12 @@ class OpenCvObjectDetector(context: Activity) {
 
         if (contourPoints.size == 4) {
             val orderedPoints = contourPoints.ordered()
-            val extentX = abs(orderedPoints[0].x - orderedPoints[2].x)
-            val extentY = abs(orderedPoints[0].y - orderedPoints[2].y)
-            val center = floatArrayOf(
-                orderedPoints[0].x + extentX / 2f,
-                orderedPoints[0].y + extentY / 2f
-            )
+//            val extentX = abs(orderedPoints[0].x - orderedPoints[2].x)
+//            val extentY = abs(orderedPoints[0].y - orderedPoints[2].y)
+//            val center = floatArrayOf(
+//                orderedPoints[0].x + extentX / 2f,
+//                orderedPoints[0].y + extentY / 2f
+//            )
 
             return orderedPoints
         } else {

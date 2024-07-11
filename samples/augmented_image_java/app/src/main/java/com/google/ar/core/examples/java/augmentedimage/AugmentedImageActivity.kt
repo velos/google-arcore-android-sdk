@@ -346,7 +346,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     // Convert the center point to world coordinates
                     convertFloats[0] = centerPoint[0]
                     convertFloats[1] = centerPoint[1]
-                    val ty = anchor.pose.ty()
+                    val ty = abs(anchor.pose.ty())
                     frame.transformCoordinates2d(
                         Coordinates2d.IMAGE_PIXELS,
                         convertFloats,
@@ -363,6 +363,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                         ty
                     )
 
+                    Log.d("carlos", "surfaceView ${surfaceView.width} x ${surfaceView.height} rotate $imageRotation")
                     Log.d("carlos", "centerPoint (${centerPoint[0]}, ${centerPoint[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]}) => (${worldCenterPoint.x}, ${worldCenterPoint.y}, ${worldCenterPoint.z})")
 
                     job = coroutineScope.launch {
@@ -398,7 +399,9 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                     )
                                 }
 
-                                Log.d("carlos", "worldCenter = $worldCenterPoint anchor = ${anchor.pose.tx()}, ${anchor.pose.ty()}, ${anchor.pose.tz()}")
+                                val transformedOrigin = anchor.pose.transformPoint(floatArrayOf(0f, 0f, 0f))
+
+                                Log.d("carlos", "worldCenter = $worldCenterPoint anchor = (${transformedOrigin[0]}, ${transformedOrigin[1]}, ${transformedOrigin[2]})")
                                 worldCornerPoints.forEachIndexed { index, vector3f ->
                                     Log.d("carlos", "worldCorner $index: ${vector3f}")
                                 }
@@ -459,10 +462,10 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 is Plane ->
                     trackable.isPoseInPolygon(hit.hitPose) &&
                             PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
-                is Point -> trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                is InstantPlacementPoint -> true
+                is Point -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                is InstantPlacementPoint -> false
                 // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
-                is DepthPoint -> true
+                is DepthPoint -> false
                 else -> false
             }
         } ?: return null

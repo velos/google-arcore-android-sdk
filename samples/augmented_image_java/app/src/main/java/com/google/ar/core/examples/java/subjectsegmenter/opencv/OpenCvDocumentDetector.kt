@@ -104,9 +104,9 @@ class OpenCvDocumentDetector {
 //            contourFloat.print(TAG)
             contourFloat
         }
+            .filter { it.rows() == 4 }
             .maxByOrNull { Imgproc.contourArea(it) }
 //            .sortedByDescending { Imgproc.contourArea(it) }
-//            .firstOrNull { it.rows() == 4 }
             ?.let { screenContour ->
                 Log.d(TAG, "found screenContour ${screenContour.rows()} points, ${Imgproc.contourArea(screenContour)} / $frameArea area")
 //                screenContour.print(TAG)
