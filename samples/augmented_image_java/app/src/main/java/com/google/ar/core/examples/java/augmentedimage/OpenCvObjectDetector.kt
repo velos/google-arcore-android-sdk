@@ -7,6 +7,7 @@ import android.graphics.Point
 import android.graphics.Rect
 import android.media.Image
 import android.util.Log
+import com.google.android.gms.tasks.Tasks.await
 import com.google.ar.core.Frame
 import com.google.ar.core.examples.kotlin.ml.classification.utils.ImageUtils
 import com.google.ar.core.examples.kotlin.ml.classification.utils.VertexUtils.rotateCoordinates
@@ -76,7 +77,15 @@ class OpenCvObjectDetector(context: Activity) {
 
             val inputImage = InputImage.fromBitmap(rotatedImage, 0)
 
-        val segmentationResult = withContext(Dispatchers.IO) { subjectSegmenter.process(inputImage).await() }
+        val segmentationResult = withContext(Dispatchers.IO) {
+            runCatching {
+                subjectSegmenter.process(inputImage).await()
+            }
+                .onFailure {
+                    Log.e("OpenCvObjectDetector", "Error with subject segmenter", it)
+                }
+                .getOrNull()
+        } ?: return null
 
         val edgeMask = edgeDetector.detect(
             rotatedImage.width,
