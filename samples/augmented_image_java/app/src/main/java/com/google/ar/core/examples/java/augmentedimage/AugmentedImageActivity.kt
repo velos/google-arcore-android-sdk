@@ -15,6 +15,7 @@
  */
 package com.google.ar.core.examples.java.augmentedimage
 
+import android.media.Image
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
@@ -52,6 +53,7 @@ import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
 import java.io.IOException
+import java.nio.ByteOrder
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import javax.vecmath.Vector2f
@@ -90,6 +92,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private var shouldConfigureSession = false
     private var detectedObjectAnchor: DetectedObjectAnchor? = null
+    private var lastDetectedObject: DetectedObject? = null
     private val coroutineScope = MainScope()
     private var job: Job? = null
 
@@ -326,58 +329,86 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             if (anchors.anchor.trackingState != TrackingState.TRACKING) {
                 Log.d("carlos", "lost tracking $anchors, removing anchor")
                 anchors.detach()
-                this@AugmentedImageActivity.detectedObjectAnchor = null
+                detectedObjectAnchor = null
+                lastDetectedObject = null
             }
         }
 
-        if (detectedObjectAnchor == null && job?.isActive != true) {
+        if (lastDetectedObject == null && job?.isActive != true && frame.camera.trackingState == TrackingState.TRACKING) {
             Log.d("carloss", "no existing anchor && no lock")
 
             frame.tryAcquireCameraImage()?.let { image ->
                 val convertYuv = objectDetector.convertYuv(image)
                 image.close()
 
-                // Check if the center of the view center has a plane
-                val centerPoint = floatArrayOf(convertYuv.width / 2f, convertYuv.height / 2f)
-                createAnchor(centerPoint[0], centerPoint[1], frame, frame.camera)?.let { centerAnchor ->
-                    val anchor = centerAnchor.createAnchor()
-                    Log.d("carlos", "found center anchor (${centerPoint[0]}, ${centerPoint[1]}) ty=${anchor.pose.ty()}")
-
-                    // Convert the center point to world coordinates
-                    convertFloats[0] = centerPoint[0]
-                    convertFloats[1] = centerPoint[1]
-                    val ty = abs(anchor.pose.ty())
-                    frame.transformCoordinates2d(
-                        Coordinates2d.IMAGE_PIXELS,
-                        convertFloats,
-                        Coordinates2d.VIEW,
-                        convertFloatsOut
-                    )
-
-                    val worldCenterPoint = LineUtils.GetWorldCoords(
-                        Vector2f(convertFloatsOut),
-                        surfaceView.width.toFloat(),
-                        surfaceView.height.toFloat(),
-                        projmtx,
-                        viewmtx,
-                        ty
-                    )
-
-                    Log.d("carlos", "surfaceView ${surfaceView.width} x ${surfaceView.height} rotate $imageRotation")
-                    Log.d("carlos", "centerPoint (${centerPoint[0]}, ${centerPoint[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]}) => (${worldCenterPoint.x}, ${worldCenterPoint.y}, ${worldCenterPoint.z})")
-
+                frame.tryAcquireDepthImage()?.let { depthImage ->
                     job = coroutineScope.launch {
                         // Check if the current view has a document
                         objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
                             Log.d("carlos", "found 4 corners $cornerPoints")
 
-                            // check if centerAnchor is in cornerPoints
-                            if (cornerPoints.isInside(centerPoint[0], centerPoint[1])) {
-                                Log.d("carlos", "corners contains anchor")
-                                val worldCornerPoints = cornerPoints.map {
-                                    val convertFloats = FloatArray(4)
-                                    val convertFloatsOut = FloatArray(4)
+                            val centerPoint = intersectionPoint(
+                                cornerPoints[0] to cornerPoints[2],
+                                cornerPoints[1] to cornerPoints[3]
+                            )
 
+                            if (cornerPoints.isInside(centerPoint.x.toFloat(), centerPoint.y.toFloat())) {
+                                val depthIn = FloatArray(2)
+                                val depthOut = FloatArray(2)
+                                depthIn[0] = centerPoint.x.toFloat()
+                                depthIn[1] = centerPoint.y.toFloat()
+                                currentFrame?.transformCoordinates2d(
+                                    Coordinates2d.IMAGE_PIXELS,
+                                    depthIn,
+                                    Coordinates2d.TEXTURE_NORMALIZED,
+                                    depthOut
+                                )
+                                val depthCenterPoint = android.graphics.Point(
+                                    (depthOut[0] * depthImage.width).toInt(),
+                                    (depthOut[1] * depthImage.height).toInt()
+                                )
+                                Log.d(
+                                    "carlos",
+                                    "converting depth: (${depthIn[0]}, ${depthIn[1]}) => (${depthOut[0]}, ${depthOut[1]})"
+                                )
+                                Log.d(
+                                    "carlos",
+                                    "getting depth: ${depthImage.width} x ${depthImage.height} (${depthCenterPoint.x}, ${depthCenterPoint.y})"
+                                )
+                                val ty = getMetersDepth(
+                                    depthImage,
+                                    depthCenterPoint.x,
+                                    depthCenterPoint.y
+                                )
+                                depthImage.close()
+                                Log.d("carlos", "depth: $ty")
+
+                                // Convert the center point to world coordinates
+                                val convertFloats = FloatArray(4)
+                                val convertFloatsOut = FloatArray(4)
+
+                                convertFloats[0] = centerPoint.x.toFloat()
+                                convertFloats[1] = centerPoint.y.toFloat()
+                                currentFrame?.transformCoordinates2d(
+                                    Coordinates2d.IMAGE_PIXELS,
+                                    convertFloats,
+                                    Coordinates2d.VIEW,
+                                    convertFloatsOut
+                                )
+                                val worldCenterPoint = LineUtils.GetWorldCoords(
+                                    Vector2f(convertFloatsOut),
+                                    surfaceView.width.toFloat(),
+                                    surfaceView.height.toFloat(),
+                                    projmtx,
+                                    viewmtx,
+                                    ty
+                                )
+                                Log.d(
+                                    "carlos",
+                                    "center: (${convertFloats[0]}, ${convertFloats[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]})"
+                                )
+
+                                val worldCornerPoints = cornerPoints.map {
                                     convertFloats[0] = it.x.toFloat()
                                     convertFloats[1] = it.y.toFloat()
                                     currentFrame?.transformCoordinates2d(
@@ -387,7 +418,10 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                         convertFloatsOut
                                     )
 
-                                    Log.d("carlos", "(${convertFloats[0]}, ${convertFloats[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
+                                    Log.d(
+                                        "carlos",
+                                        "(${convertFloats[0]}, ${convertFloats[1]}) => (${convertFloatsOut[0]}, ${convertFloatsOut[1]})"
+                                    )
 
                                     LineUtils.GetWorldCoords(
                                         Vector2f(convertFloatsOut),
@@ -399,26 +433,29 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                     )
                                 }
 
-                                val transformedOrigin = anchor.pose.transformPoint(floatArrayOf(0f, 0f, 0f))
-
-                                Log.d("carlos", "worldCenter = $worldCenterPoint anchor = (${transformedOrigin[0]}, ${transformedOrigin[1]}, ${transformedOrigin[2]})")
-                                worldCornerPoints.forEachIndexed { index, vector3f ->
-                                    Log.d("carlos", "worldCorner $index: ${vector3f}")
-                                }
-
-                                detectedObjectAnchor = DetectedObjectAnchor(
-                                    anchor = anchor,
-                                    centerPoint = worldCenterPoint,
-                                    cornerPoints = worldCornerPoints
-                                )
+                                lastDetectedObject =
+                                    DetectedObject(worldCornerPoints, worldCenterPoint)
                             }
-                        } ?: run {
-                            Log.d("carlos", "no object detected")
-                            anchor.detach()
                         }
                     }
+                }
+            }
+        }
+
+        if (detectedObjectAnchor == null) {
+            lastDetectedObject?.let {
+                Log.d("carlos", "looking for anchor")
+                createAnchor(it.center, frame, frame.camera)?.let { centerAnchor ->
+                    Log.d("carlos", "found anchor")
+                    val anchor = centerAnchor.createAnchor()
+                    detectedObjectAnchor = DetectedObjectAnchor(
+                        anchor = anchor,
+                        centerPoint = it.center,
+                        cornerPoints = it.corners
+                    )
                 } ?: run {
-                    Log.d("carlos", "no anchor detected")
+                    Log.d("carlos", "no anchor")
+                    lastDetectedObject = null
                 }
             }
         }
@@ -474,7 +511,36 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         return result
     }
 
-    fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame): HitResult? {
+fun createAnchor(point: Vector3f, frame: Frame, camera: Camera): HitResult? {
+    val cameraPosition = camera.pose.translation
+    Log.d("carlos", "hitTest (${cameraPosition[0]}, ${cameraPosition[1]}, ${cameraPosition[2]}) => ${point}")
+
+    val hits = frame.hitTest(
+        cameraPosition,
+        0,
+        floatArrayOf(point.x, point.y, point.z),
+        0
+    )
+    Log.d("carlos", "hits: ${hits.map { it.trackable.javaClass.simpleName }}")
+
+    val result = hits.firstOrNull { hit ->
+        when (val trackable = hit.trackable!!) {
+            is Plane ->
+                trackable.isPoseInPolygon(hit.hitPose) &&
+                        PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
+            is Point -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+            is InstantPlacementPoint -> false
+            // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
+            is DepthPoint -> false
+            else -> false
+        }
+    } ?: return null
+
+//    val result = hits.getOrNull(0) ?: return null
+    return result
+}
+
+fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame): HitResult? {
         // IMAGE_PIXELS -> VIEW
         convertFloats[0] = xImage
         convertFloats[1] = yImage
@@ -505,9 +571,50 @@ fun List<android.graphics.Point>.isInside(x: Float, y: Float): Boolean {
             && y < this[2].y
 }
 
+fun intersectionPoint(line1: Pair<android.graphics.Point, android.graphics.Point>, line2: Pair<android.graphics.Point, android.graphics.Point>): android.graphics.Point {
+    val p0_x = line1.first.x
+    val p0_y = line1.first.y
+    val p1_x = line1.second.x
+    val p1_y = line1.second.y
+
+    val p2_x = line2.first.x
+    val p2_y = line2.first.y
+    val p3_x = line2.second.x
+    val p3_y = line2.second.y
+
+    val s1_x = p1_x - p0_x
+    val s1_y = p1_y - p0_y
+    val s2_x = p3_x - p2_x
+    val s2_y = p3_y - p2_y
+
+    val t = (s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)).toFloat() / (-s2_x * s1_y + s1_x * s2_y).toFloat()
+
+    return android.graphics.Point((p0_x + (t * s1_x)).toInt(), (p0_y + (t * s1_y)).toInt())
+}
+
+/** Obtain the depth in millimeters for [depthImage] at coordinates ([x], [y]). */
+fun getMetersDepth(depthImage: Image, x: Int, y: Int): Float {
+    // The depth image has a single plane, which stores depth for each
+    // pixel as 16-bit unsigned integers.
+    val plane = depthImage.planes[0]
+    val byteIndex = x * plane.pixelStride + y * plane.rowStride
+    val buffer = plane.buffer.order(ByteOrder.nativeOrder())
+    val depthSample = buffer.getShort(byteIndex)
+    return (depthSample.toDouble() / 1000.0).toFloat()
+}
+
 fun Frame.tryAcquireCameraImage() =
     try {
         acquireCameraImage()
+    } catch (e: NotYetAvailableException) {
+        null
+    } catch (e: Throwable) {
+        throw e
+    }
+
+fun Frame.tryAcquireDepthImage() =
+    try {
+        acquireDepthImage16Bits()
     } catch (e: NotYetAvailableException) {
         null
     } catch (e: Throwable) {
@@ -523,3 +630,8 @@ data class DetectedObjectAnchor(
         anchor.detach()
     }
 }
+
+data class DetectedObject(
+    val corners: List<Vector3f>,
+    val center: Vector3f
+)
