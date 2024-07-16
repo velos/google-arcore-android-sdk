@@ -63,6 +63,7 @@ import kotlin.math.atan2
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import org.opencv.android.OpenCVLoader
 
 /**
@@ -92,9 +93,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
     private var shouldConfigureSession = false
     private var detectedObjectAnchor: DetectedObjectAnchor? = null
-    private var lastDetectedObject: DetectedObject? = null
-    private val coroutineScope = MainScope()
-    private var job: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -259,8 +257,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, width, height)
     }
 
-    private var currentFrame: Frame? = null
-
     override fun onDrawFrame(gl: GL10) {
         // Clear screen to notify driver it should not load any pixels from previous frame.
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
@@ -320,7 +316,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private fun drawAugmentedImages(
         frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, colorCorrectionRgba: FloatArray
     ) {
-        currentFrame = frame
         val cameraId = session!!.cameraConfig.cameraId
         val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
 //            Log.d("carlos", "detecting objects...")
@@ -330,11 +325,10 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 Log.d("carlos", "lost tracking $anchors, removing anchor")
                 anchors.detach()
                 detectedObjectAnchor = null
-                lastDetectedObject = null
             }
         }
 
-        if (lastDetectedObject == null && job?.isActive != true && frame.camera.trackingState == TrackingState.TRACKING) {
+        if (detectedObjectAnchor == null && frame.camera.trackingState == TrackingState.TRACKING) {
             Log.d("carloss", "no existing anchor && no lock")
 
             frame.tryAcquireCameraImage()?.let { image ->
@@ -342,7 +336,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 image.close()
 
                 frame.tryAcquireDepthImage()?.let { depthImage ->
-                    job = coroutineScope.launch {
+                    runBlocking {
                         // Check if the current view has a document
                         objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
                             Log.d("carlos", "found 4 corners $cornerPoints")
@@ -357,7 +351,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                 val depthOut = FloatArray(2)
                                 depthIn[0] = centerPoint.x.toFloat()
                                 depthIn[1] = centerPoint.y.toFloat()
-                                currentFrame?.transformCoordinates2d(
+                                frame.transformCoordinates2d(
                                     Coordinates2d.IMAGE_PIXELS,
                                     depthIn,
                                     Coordinates2d.TEXTURE_NORMALIZED,
@@ -389,7 +383,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
                                 convertFloats[0] = centerPoint.x.toFloat()
                                 convertFloats[1] = centerPoint.y.toFloat()
-                                currentFrame?.transformCoordinates2d(
+                                frame.transformCoordinates2d(
                                     Coordinates2d.IMAGE_PIXELS,
                                     convertFloats,
                                     Coordinates2d.VIEW,
@@ -411,7 +405,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                 val worldCornerPoints = cornerPoints.map {
                                     convertFloats[0] = it.x.toFloat()
                                     convertFloats[1] = it.y.toFloat()
-                                    currentFrame?.transformCoordinates2d(
+                                    frame.transformCoordinates2d(
                                         Coordinates2d.IMAGE_PIXELS,
                                         convertFloats,
                                         Coordinates2d.VIEW,
@@ -433,19 +427,16 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                     )
                                 }
 
-                                lastDetectedObject =
-                                    DetectedObject(worldCornerPoints, worldCenterPoint)
+                                DetectedObject(worldCornerPoints, worldCenterPoint, centerPoint)
+                            } else {
+                                null
                             }
                         }
                     }
                 }
-            }
-        }
-
-        if (detectedObjectAnchor == null) {
-            lastDetectedObject?.let {
+            }?.let {
                 Log.d("carlos", "looking for anchor")
-                createAnchor(it.center, frame, frame.camera)?.let { centerAnchor ->
+                createAnchor(it.centerPoint.x.toFloat(), it.centerPoint.y.toFloat(), frame, frame.camera)?.let { centerAnchor ->
                     Log.d("carlos", "found anchor")
                     val anchor = centerAnchor.createAnchor()
                     detectedObjectAnchor = DetectedObjectAnchor(
@@ -455,7 +446,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     )
                 } ?: run {
                     Log.d("carlos", "no anchor")
-                    lastDetectedObject = null
                 }
             }
         }
@@ -633,5 +623,6 @@ data class DetectedObjectAnchor(
 
 data class DetectedObject(
     val corners: List<Vector3f>,
-    val center: Vector3f
+    val center: Vector3f,
+    val centerPoint: android.graphics.Point,
 )
