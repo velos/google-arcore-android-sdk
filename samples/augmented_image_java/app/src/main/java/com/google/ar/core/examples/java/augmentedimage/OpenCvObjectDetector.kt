@@ -11,6 +11,12 @@ import com.google.android.gms.tasks.Tasks.await
 import com.google.ar.core.Frame
 import com.google.ar.core.examples.kotlin.ml.classification.utils.ImageUtils
 import com.google.ar.core.examples.kotlin.ml.classification.utils.VertexUtils.rotateCoordinates
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.framework.image.ByteBufferExtractor
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenter
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.demo.kotlin.subjectsegmenter.EdgeDetector
 import com.google.mlkit.vision.demo.kotlin.subjectsegmenter.opencv.OpenCvDocumentDetector
@@ -31,17 +37,33 @@ import kotlinx.coroutines.withContext
 /** Analyzes an image using ML Kit. */
 class OpenCvObjectDetector(context: Activity) {
     val yuvConverter = YuvToRgbConverter(context)
-    private val subjectSegmenter: SubjectSegmenter
+//    private val subjectSegmenter: SubjectSegmenter
+    private val imageSegmenter: ImageSegmenter
     private val openCvDocumentDetector: OpenCvDocumentDetector
     private val edgeDetector: EdgeDetector
 
     init {
-        subjectSegmenter =
-            SubjectSegmentation.getClient(
-                SubjectSegmenterOptions.Builder()
-                    .enableForegroundConfidenceMask()
-                    .build()
-            )
+//        subjectSegmenter =
+//            SubjectSegmentation.getClient(
+//                SubjectSegmenterOptions.Builder()
+//                    .enableForegroundConfidenceMask()
+//                    .build()
+//            )
+
+        imageSegmenter = ImageSegmenter.createFromOptions(
+            context,
+            ImageSegmenter.ImageSegmenterOptions.builder()
+                .setRunningMode(RunningMode.IMAGE)
+                .setBaseOptions(
+                    BaseOptions.builder()
+                        .setDelegate(Delegate.CPU)
+                        .setModelAssetPath("mobile_bg_removal_v8.f16.tflite")
+                        .build()
+                )
+                .setOutputCategoryMask(false)
+                .setOutputConfidenceMasks(true)
+                .build()
+        )
 
         openCvDocumentDetector = OpenCvDocumentDetector()
         openCvDocumentDetector.initialize()
@@ -53,33 +75,20 @@ class OpenCvObjectDetector(context: Activity) {
     }
 
     suspend fun analyze(convertYuv: Bitmap, imageRotation: Int): List<Point>? {
-//        val image = frame.tryAcquireCameraImage() ?: return null
-//
-//            // `image` is in YUV
-//            // (https://developers.google.com/ar/reference/java/com/google/ar/core/Frame#acquireCameraImage()),
-//            val convertYuv = convertYuv(image)
-//
-//            image.close()
-
-//            val targetWidth = 640f
-//            val scaleFactor = targetWidth / convertYuv.width.toFloat()
-//            val targetHeight = convertYuv.height.toFloat() * scaleFactor
-
-//    val scaledBitmap = Bitmap.createScaledBitmap(
-//      convertYuv,
-//      targetWidth.toInt(),
-//      targetHeight.toInt(),
-//      true
-//    )
-
-            // The model performs best on upright images, so rotate it.
-            val rotatedImage = ImageUtils.rotateBitmap(convertYuv, imageRotation)
-
-            val inputImage = InputImage.fromBitmap(rotatedImage, 0)
+        // The model performs best on upright images, so rotate it.
+        val rotatedImage = ImageUtils.rotateBitmap(convertYuv, imageRotation)
 
         val segmentationResult = withContext(Dispatchers.IO) {
             runCatching {
-                subjectSegmenter.process(inputImage).await()
+                val mpImage = BitmapImageBuilder(rotatedImage).build()
+                val segmentationResult = imageSegmenter.segment(mpImage)
+                ByteBufferExtractor.extract(
+                    segmentationResult.confidenceMasks().get().first()
+                )
+                    .asFloatBuffer()
+
+//                val inputImage = InputImage.fromBitmap(rotatedImage, 0)
+//                subjectSegmenter.process(inputImage).await()
             }
                 .onFailure {
                     Log.e("OpenCvObjectDetector", "Error with subject segmenter", it)
@@ -91,7 +100,7 @@ class OpenCvObjectDetector(context: Activity) {
             rotatedImage.width,
             rotatedImage.height,
             rotatedImage.width,
-            segmentationResult.foregroundConfidenceMask!!
+            segmentationResult
         )
 
         val contourPoints = openCvDocumentDetector.detect(
