@@ -73,6 +73,10 @@ import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * This is a simple example that demonstrates how to use the Camera2 API while sharing camera access
@@ -180,7 +184,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
     // Prevent any changes to camera capture session after CameraManager.openCamera() is called, but
     // before camera device becomes active.
-    private var captureSessionChangesPossible = true
+    private var captureSessionChangesPossible = Mutex()
 
     // A check mechanism to ensure that the camera closed properly so that the app can safely exit.
     private val safeToExitApp = ConditionVariable()
@@ -249,10 +253,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 if (arMode && !arcoreActive) {
                     resumeARCore()
                 }
-                synchronized(this@SharedCameraActivity) {
-                    captureSessionChangesPossible = true
-                    (this@SharedCameraActivity as Object).notify()
-                }
+
+                captureSessionChangesPossible.unlock()
+
                 updateSnackbarMessage()
             }
 
@@ -366,15 +369,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
     @Synchronized
     private fun waitUntilCameraCaptureSessionIsActive() {
-        while (!captureSessionChangesPossible) {
-            try {
-                (this as Object).wait()
-            } catch (e: InterruptedException) {
-                Log.e(
-                    TAG,
-                    "Unable to wait for a safe time to make changes to the capture session",
-                    e
-                )
+        runBlocking {
+            while (captureSessionChangesPossible.isLocked) {
+                delay(100)
             }
         }
     }
@@ -619,7 +616,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
             // Prevent app crashes due to quick operations on camera open / close by waiting for the
             // capture session's onActive() callback to be triggered.
-            captureSessionChangesPossible = false
+            captureSessionChangesPossible.tryLock()
 
             // Open the camera device using the ARCore wrapped callback.
             cameraManager!!.openCamera(cameraId!!, wrappedCallback, backgroundHandler)
