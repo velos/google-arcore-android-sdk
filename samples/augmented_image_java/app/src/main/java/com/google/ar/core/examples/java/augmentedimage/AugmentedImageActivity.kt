@@ -387,7 +387,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
                     Log.d("carlos", "camera (${frame.camera.pose.tx()}, ${frame.camera.pose.ty()}, ${frame.camera.pose.tz()})")
 
-                    val cornerAnchors = it.corners.mapIndexed { index, worldCorner ->
+                    val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
 //                        convertFloats[0] = corner.x.toFloat()
 //                        convertFloats[1] = corner.y.toFloat()
 //                        frame.transformCoordinates2d(
@@ -411,21 +411,21 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 //                           0f
 //                        )
 
-                        Log.d("carlos", "corner $index worldCorner=${worldCorner}")
-                        plane.createAnchor(
-                                Pose.makeTranslation(worldCorner.x, worldCorner.y, worldCorner.z)
-                        )
+//                        Log.d("carlos", "corner $index worldCorner=${worldCorner}")
+//                        plane.createAnchor(
+//                                Pose.makeTranslation(worldCorner.x, worldCorner.y, worldCorner.z)
+//                        )
 
-//                        createAnchor(corner.x.toFloat(), corner.y.toFloat(), frame, plane)?.hitPose?.let { pose ->
-//                            Log.d("carlos", "corner $index anchor=${pose} worldCorner=${worldCorner}")
-//                            plane.createAnchor(
+                        createAnchor(corner.x.toFloat(), corner.y.toFloat(), frame, plane)?.hitPose?.let { pose ->
+                            Log.d("carlos", "corner $index anchor=${pose}")
+                            plane.createAnchor(
 //                                Pose.makeTranslation(it.corners[index].x, it.corners[index].y, it.corners[index].z)
-//                                pose
+                                pose
 //                                anchorPose.extractRotation().compose(pose.extractTranslation())
 //                                pose.extractTranslation()
 //                                    .compose(anchorPose.extractRotation())
-//                            )
-//                        }
+                            )
+                        }
 //
 //                        Log.d("carlos", "corner $index ${it.corners[index]}")
 //                        val distance = hypotenuse(
