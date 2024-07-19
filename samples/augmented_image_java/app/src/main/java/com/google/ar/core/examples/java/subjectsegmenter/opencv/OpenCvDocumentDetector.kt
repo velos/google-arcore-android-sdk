@@ -2,6 +2,11 @@ package com.google.mlkit.vision.demo.kotlin.subjectsegmenter.opencv
 
 import android.graphics.Point
 import android.util.Log
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.release
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.toMat
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.toMatOfPoint
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.toMatOfPoint2F
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.toPoints
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f

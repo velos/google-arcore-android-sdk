@@ -2,13 +2,9 @@ package com.google.ar.core.examples.java.augmentedimage
 
 import android.app.Activity
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.graphics.Point
-import android.graphics.Rect
 import android.media.Image
 import android.util.Log
-import com.google.android.gms.tasks.Tasks.await
-import com.google.ar.core.Frame
 import com.google.ar.core.examples.kotlin.ml.classification.utils.ImageUtils
 import com.google.ar.core.examples.kotlin.ml.classification.utils.VertexUtils.rotateCoordinates
 import com.google.mediapipe.framework.image.BitmapImageBuilder
@@ -17,21 +13,10 @@ import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenter
-import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.demo.kotlin.subjectsegmenter.EdgeDetector
 import com.google.mlkit.vision.demo.kotlin.subjectsegmenter.opencv.OpenCvDocumentDetector
-import com.google.mlkit.vision.demo.kotlin.subjectsegmenter.opencv.ordered
-import com.google.mlkit.vision.objects.DetectedObject
-import com.google.mlkit.vision.objects.ObjectDetection
-import com.google.mlkit.vision.objects.ObjectDetector
-import com.google.mlkit.vision.objects.custom.CustomObjectDetectorOptions
-import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
-import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
-import com.google.mlkit.vision.segmentation.subject.SubjectSegmenter
-import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
-import kotlin.math.abs
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.ordered
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 /** Analyzes an image using ML Kit. */

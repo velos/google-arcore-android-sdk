@@ -34,9 +34,11 @@ import com.google.ar.core.Frame
 import com.google.ar.core.HitResult
 import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
-import com.google.ar.core.Point
+import com.google.ar.core.Point as ArPoint
+import android.graphics.Point
 import com.google.ar.core.Pose
 import com.google.ar.core.Session
+import com.google.ar.core.Trackable
 import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.augmentedimage.rendering.AugmentedImageRenderer
 import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper
@@ -46,6 +48,7 @@ import com.google.ar.core.examples.java.common.helpers.SnackbarHelper
 import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
+import com.google.ar.core.examples.java.subjectsegmenter.opencv.hypotenuse
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
@@ -308,7 +311,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         config.setFocusMode(Config.FocusMode.AUTO)
         config.setDepthMode(Config.DepthMode.AUTOMATIC)
         config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL)
-//        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
+        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
         config.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE)
         session!!.configure(config)
     }
@@ -427,7 +430,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                                     )
                                 }
 
-                                DetectedObject(worldCornerPoints, worldCenterPoint, centerPoint)
+                                DetectedObject(cornerPoints = cornerPoints, centerPoint = centerPoint, center = worldCenterPoint, corners = worldCornerPoints, depth = ty)
                             } else {
                                 null
                             }
@@ -437,12 +440,37 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             }?.let {
                 Log.d("carlos", "looking for anchor")
                 createAnchor(it.centerPoint.x.toFloat(), it.centerPoint.y.toFloat(), frame, frame.camera)?.let { centerAnchor ->
-                    Log.d("carlos", "found anchor")
                     val anchor = centerAnchor.createAnchor()
+                    val anchorPose = anchor.pose
+                    val plane = (centerAnchor.trackable as Plane)
+//                    centerAnchor.trackable.createAnchor(Pose())
+                    Log.d("carlos", "found anchor depth=${it.depth} ty=${anchor.pose.ty()} anchorDistance=${centerAnchor.distance}")
+                    Log.d("carlos", "found anchor pose=(${anchor.pose.tx()}, ${anchor.pose.ty()}, ${anchor.pose.tz()})")
+
+                    Log.d("carlos", "camera (${frame.camera.pose.tx()}, ${frame.camera.pose.ty()}, ${frame.camera.pose.tz()})")
+
+                    val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
+
+                        Log.d("carlos", "corner $index ${it.corners[index]}")
+                        val distance = hypotenuse(
+                            it.corners[index].x - frame.camera.pose.tx(),
+                            it.corners[index].y - frame.camera.pose.ty(),
+                            it.corners[index].z - frame.camera.pose.tz(),
+                        )
+
+                        Log.d("carlos", "corner $index distance=$distance")
+
+                        plane.createAnchor(
+                            createCornerAnchor(corner.x.toFloat(), corner.y.toFloat(), distance, frame).hitPose
+                        )
+                    }
+
+
                     detectedObjectAnchor = DetectedObjectAnchor(
                         anchor = anchor,
-                        centerPoint = it.center,
-                        cornerPoints = it.corners
+                        cornerAnchors = cornerAnchors
+//                        centerPoint = it.center,
+//                        cornerPoints = it.corners
                     )
                 } ?: run {
                     Log.d("carlos", "no anchor")
@@ -456,7 +484,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             Log.d("carloss", "drawing anchor")
 
             augmentedImageRenderer.draw(
-                viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.centerPoint, detectedObjectAnchor.cornerPoints, colorCorrectionRgba
+                viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.cornerAnchors, colorCorrectionRgba
             )
         }
     }
@@ -489,7 +517,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 is Plane ->
                     trackable.isPoseInPolygon(hit.hitPose) &&
                             PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
-                is Point -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+                is ArPoint -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
                 is InstantPlacementPoint -> false
                 // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
                 is DepthPoint -> false
@@ -501,7 +529,30 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         return result
     }
 
-fun createAnchor(point: Vector3f, frame: Frame, camera: Camera): HitResult? {
+    fun createAnchor(xImage: Float, yImage: Float, frame: Frame, trackable: Trackable): HitResult? {
+        // IMAGE_PIXELS -> VIEW
+        convertFloats[0] = xImage
+        convertFloats[1] = yImage
+        frame.transformCoordinates2d(
+            Coordinates2d.IMAGE_PIXELS,
+            convertFloats,
+            Coordinates2d.VIEW,
+            convertFloatsOut
+        )
+
+//        Log.d("carlos", "hitTest (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
+
+        // Conduct a hit test using the VIEW coordinates
+        val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
+
+        val result = hits.firstOrNull { hit ->
+            hit.trackable == trackable
+        }
+
+        return result
+    }
+
+    fun createAnchor(point: Vector3f, frame: Frame, camera: Camera): HitResult? {
     val cameraPosition = camera.pose.translation
     Log.d("carlos", "hitTest (${cameraPosition[0]}, ${cameraPosition[1]}, ${cameraPosition[2]}) => ${point}")
 
@@ -518,7 +569,7 @@ fun createAnchor(point: Vector3f, frame: Frame, camera: Camera): HitResult? {
             is Plane ->
                 trackable.isPoseInPolygon(hit.hitPose) &&
                         PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
-            is Point -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
+            is ArPoint -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
             is InstantPlacementPoint -> false
             // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
             is DepthPoint -> false
@@ -530,7 +581,7 @@ fun createAnchor(point: Vector3f, frame: Frame, camera: Camera): HitResult? {
     return result
 }
 
-fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame): HitResult? {
+fun createCornerAnchor(xImage: Float, yImage: Float, distance: Float, frame: Frame): HitResult {
         // IMAGE_PIXELS -> VIEW
         convertFloats[0] = xImage
         convertFloats[1] = yImage
@@ -542,7 +593,7 @@ fun createCornerAnchor(xImage: Float, yImage: Float, frame: Frame): HitResult? {
         )
 
         // Conduct a hit test using the VIEW coordinates
-        return frame.hitTest(convertFloatsOut[0], convertFloatsOut[1]).firstOrNull()
+        return frame.hitTestInstantPlacement(convertFloatsOut[0], convertFloatsOut[1], distance).first()
     }
 
     companion object {
@@ -613,16 +664,20 @@ fun Frame.tryAcquireDepthImage() =
 
 data class DetectedObjectAnchor(
     val anchor: Anchor,
-    val centerPoint: Vector3f,
-    val cornerPoints: List<Vector3f>
+    val cornerAnchors: List<Anchor>
+//    val centerPoint: Vector3f,
+//    val cornerPoints: List<Vector3f>
 ) {
     fun detach() {
         anchor.detach()
+        cornerAnchors.forEach { it.detach() }
     }
 }
 
 data class DetectedObject(
     val corners: List<Vector3f>,
     val center: Vector3f,
-    val centerPoint: android.graphics.Point,
+    val cornerPoints: List<Point>,
+    val centerPoint: Point,
+    val depth: Float
 )

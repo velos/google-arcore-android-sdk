@@ -70,8 +70,7 @@ class AugmentedImageRenderer {
         viewMatrix: FloatArray,
         projectionMatrix: FloatArray,
         centerAnchor: Anchor,
-        centerPoint: Vector3f,
-        cornerPoints: List<Vector3f>,
+        cornerAnchors: List<Anchor>,
         colorCorrectionRgba: FloatArray,
     ) {
         Log.d(TAG, "drawing $centerAnchor")
@@ -88,13 +87,13 @@ class AugmentedImageRenderer {
 
         val anchorPose = centerAnchor.pose
 
-        val localBoundaryPoses = cornerPoints.map {
-            Pose.makeTranslation(
-                it.x - centerPoint.x,
-                0f,
-                it.z - centerPoint.z,
-            )
-        }
+//        val localBoundaryPoses = cornerPoints.map {
+//            Pose.makeTranslation(
+//                it.x - centerPoint.x,
+//                0f,
+//                it.z - centerPoint.z,
+//            )
+//        }
 //
 //        val xRadius = 0.10795f // TODO calculate radius dynamically
 //        val yRadius = 0.1397f
@@ -133,7 +132,7 @@ class AugmentedImageRenderer {
 //        return
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
-            worldBoundaryPoses[i] = anchorPose.compose(localBoundaryPoses[i])
+            worldBoundaryPoses[i] = cornerAnchors[i].pose//anchorPose.compose(localBoundaryPoses[i])
         }
 
         worldBoundaryPoses[0]!!.toMatrix(modelMatrix, 0)

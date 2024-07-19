@@ -1,4 +1,4 @@
-package com.google.mlkit.vision.demo.kotlin.subjectsegmenter.opencv
+package com.google.ar.core.examples.java.subjectsegmenter.opencv
 
 import android.graphics.Point
 import android.util.Log
@@ -31,6 +31,9 @@ fun hypotenuse(a: Double, b: Double): Double =
 
 fun hypotenuse(a: Float, b: Float): Float =
     sqrt(a.pow(2) + b.pow(2))
+
+fun hypotenuse(a: Float, b: Float, c: Float): Float =
+    sqrt(a.pow(2) + b.pow(2) + c.pow(2))
 
 fun MatOfPoint.toFloatArray(): FloatArray {
     val result = FloatArray(rows() * 2)
