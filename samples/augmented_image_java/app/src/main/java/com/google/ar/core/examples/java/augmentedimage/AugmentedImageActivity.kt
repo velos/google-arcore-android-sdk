@@ -15,28 +15,40 @@
  */
 package com.google.ar.core.examples.java.augmentedimage
 
-import com.google.ar.core.Point as ArPoint
+import android.graphics.ImageFormat
 import android.graphics.Point
-import android.media.Image
+import android.hardware.camera2.CameraAccessException
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCaptureSession.CaptureCallback
+import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureFailure
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR
+import android.media.ImageReader
+import android.media.ImageReader.OnImageAvailableListener
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
+import android.os.ConditionVariable
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
+import android.view.Surface
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.ArCoreApk.InstallStatus
-import com.google.ar.core.Camera
 import com.google.ar.core.Config
-import com.google.ar.core.Coordinates2d
-import com.google.ar.core.DepthPoint
 import com.google.ar.core.Frame
-import com.google.ar.core.HitResult
-import com.google.ar.core.InstantPlacementPoint
 import com.google.ar.core.Plane
 import com.google.ar.core.Session
-import com.google.ar.core.Trackable
+import com.google.ar.core.SharedCamera
 import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.augmentedimage.rendering.AugmentedImageRenderer
 import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper
@@ -45,20 +57,20 @@ import com.google.ar.core.examples.java.common.helpers.FullScreenHelper
 import com.google.ar.core.examples.java.common.helpers.SnackbarHelper
 import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
-import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.NotYetAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
 import java.io.IOException
-import java.nio.ByteOrder
+import java.util.EnumSet
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
-import javax.vecmath.Vector2f
-import javax.vecmath.Vector3f
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
 import org.opencv.android.OpenCVLoader
 
 /**
@@ -71,7 +83,7 @@ import org.opencv.android.OpenCVLoader
  * FULL_TRACKING. See details in [Recognize and Augment
  * Images](https://developers.google.com/ar/develop/java/augmented-images/).
  */
-class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
+class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImageAvailableListener {
     // Rendering. The Renderers are created here, and initialized when the GL surface is created.
     private lateinit var surfaceView: GLSurfaceView
 
@@ -86,8 +98,39 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private val backgroundRenderer = BackgroundRenderer()
     private val augmentedImageRenderer = AugmentedImageRenderer()
 
-    private var shouldConfigureSession = false
     private var detectedObjectAnchor: DetectedObjectAnchor? = null
+
+    // Whether the app has just entered non-AR mode.
+    private val isFirstFrameWithoutArcore = AtomicBoolean(true)
+    // Camera capture session. Used by both non-AR and AR modes.
+    private var captureSession: CameraCaptureSession? = null
+    // Reference to the camera system service.
+    private var cameraManager: CameraManager? = null
+    // Camera device. Used by both non-AR and AR modes.
+    private var cameraDevice: CameraDevice? = null
+    // Looper handler thread.
+    private var backgroundThread: HandlerThread? = null
+    // Looper handler.
+    private var backgroundHandler: Handler? = null
+    // ARCore shared camera instance, obtained from ARCore session that supports sharing.
+    private var sharedCamera: SharedCamera? = null
+    // Camera ID for the camera used by ARCore.
+    private var cameraId: String? = null
+    // Ensure GL surface draws only occur when new frames are available.
+    private val shouldUpdateSurfaceTexture = AtomicBoolean(false)
+    // Whether the GL surface has been created.
+    private var surfaceCreated = false
+    // Whether an error was thrown during session creation.
+    private var errorCreatingSession = false
+    // Camera preview capture request builder
+    private var previewCaptureRequestBuilder: CaptureRequest.Builder? = null
+    // Image reader that continuously processes CPU images.
+    private var cpuImageReader: ImageReader? = null
+    // Prevent any changes to camera capture session after CameraManager.openCamera() is called, but
+    // before camera device becomes active.
+    private var captureSessionChangesPossible = Mutex()
+    // A check mechanism to ensure that the camera closed properly so that the app can safely exit.
+    private val safeToExitApp = ConditionVariable()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -153,8 +196,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                     CameraPermissionHelper.requestCameraPermission(this)
                     return
                 }
-
-                session = Session( /* context = */this)
             } catch (e: UnavailableArcoreNotInstalledException) {
                 message = "Please install ARCore"
                 exception = e
@@ -177,37 +218,28 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
                 Log.e(TAG, "Exception creating session", exception)
                 return
             }
-
-            shouldConfigureSession = true
         }
 
-        if (shouldConfigureSession) {
-            configureSession()
-            shouldConfigureSession = false
-        }
-
-        // Note that order matters - see the note in onPause(), the reverse applies here.
-        try {
-            session!!.resume()
-        } catch (e: CameraNotAvailableException) {
-            messageSnackbarHelper.showError(this, "Camera not available. Try restarting the app.")
-            session = null
-            return
-        }
+        waitUntilCameraCaptureSessionIsActive()
+        startBackgroundThread()
         surfaceView.onResume()
-        displayRotationHelper!!.onResume()
+
+        // When the activity starts and resumes for the first time, openCamera() will be called
+        // from onSurfaceCreated(). In subsequent resumes we call openCamera() here.
+        if (surfaceCreated) {
+            openCamera()
+        }
     }
 
     public override fun onPause() {
+        shouldUpdateSurfaceTexture.set(false)
+        surfaceView.onPause()
+        waitUntilCameraCaptureSessionIsActive()
+        displayRotationHelper!!.onPause()
+        pauseARCore()
+        closeCamera()
+        stopBackgroundThread()
         super.onPause()
-        if (session != null) {
-            // Note that the order matters - GLSurfaceView is paused first so that it does not try
-            // to query the session. If Session is paused before GLSurfaceView, GLSurfaceView may
-            // still call session.update() and get a SessionPausedException.
-            displayRotationHelper!!.onPause()
-            surfaceView.onPause()
-            session!!.pause()
-        }
     }
 
     override fun onRequestPermissionsResult(
@@ -235,6 +267,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     override fun onSurfaceCreated(gl: GL10, config: EGLConfig) {
+        surfaceCreated = true
+
         GLES20.glClearColor(0.1f, 0.1f, 0.1f, 1.0f)
 
         // Prepare the rendering objects. This involves reading shaders, so may throw an IOException.
@@ -242,6 +276,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             // Create the texture and pass it to ARCore session to be filled during update().
             backgroundRenderer.createOnGlThread( /*context=*/this)
             augmentedImageRenderer.createOnGlThread( /*context=*/this)
+
+            openCamera()
         } catch (e: IOException) {
             Log.e(TAG, "Failed to read an asset file", e)
         }
@@ -256,46 +292,63 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         // Clear screen to notify driver it should not load any pixels from previous frame.
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
 
-        if (session == null) {
+        if (!shouldUpdateSurfaceTexture.get()) {
+            // Not ready to draw.
             return
         }
+
         // Notify ARCore session that the view size changed so that the perspective matrix and
         // the video background can be properly adjusted.
         displayRotationHelper!!.updateSessionIfNeeded(session)
 
         try {
-            session!!.setCameraTextureName(backgroundRenderer.textureId)
-
-            // Obtain the current frame from ARSession. When the configuration is set to
-            // UpdateMode.BLOCKING (it is by default), this will throttle the rendering to the
-            // camera framerate.
-            val frame = session!!.update()
-            val camera = frame.camera
-
-            // Keep the screen unlocked while tracking, but allow it to lock when tracking stops.
-            trackingStateHelper.updateKeepScreenOnFlag(camera.trackingState)
-
-            // If frame is ready, render camera preview image to the GL surface.
-            backgroundRenderer.draw(frame)
-
-            // Get projection matrix.
-            val projmtx = FloatArray(16)
-            camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f)
-
-            // Get camera matrix and draw.
-            val viewmtx = FloatArray(16)
-            camera.getViewMatrix(viewmtx, 0)
-
-            // Compute lighting from average intensity of the image.
-            val colorCorrectionRgba = FloatArray(4)
-            frame.lightEstimate.getColorCorrection(colorCorrectionRgba, 0)
-
-            // Visualize augmented images.
-            drawAugmentedImages(frame, projmtx, viewmtx, colorCorrectionRgba)
+            if (true) { // TODO
+                onDrawFrameARCore()
+            } else {
+                onDrawFrameCamera2()
+            }
         } catch (t: Throwable) {
             // Avoid crashing the application due to unhandled exceptions.
             Log.e(TAG, "Exception on the OpenGL thread", t)
         }
+    }
+
+    private fun onDrawFrameARCore() {
+        if (session == null) {
+            return
+        }
+
+        if (errorCreatingSession) {
+            // Session not created, so nothing to draw.
+            return
+        }
+
+        // Obtain the current frame from ARSession. When the configuration is set to
+        // UpdateMode.BLOCKING (it is by default), this will throttle the rendering to the
+        // camera framerate.
+        val frame = session!!.update()
+        val camera = frame.camera
+
+        // Keep the screen unlocked while tracking, but allow it to lock when tracking stops.
+        trackingStateHelper.updateKeepScreenOnFlag(camera.trackingState)
+
+        // If frame is ready, render camera preview image to the GL surface.
+        backgroundRenderer.draw(frame)
+
+        // Get projection matrix.
+        val projmtx = FloatArray(16)
+        camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f)
+
+        // Get camera matrix and draw.
+        val viewmtx = FloatArray(16)
+        camera.getViewMatrix(viewmtx, 0)
+
+        // Compute lighting from average intensity of the image.
+        val colorCorrectionRgba = FloatArray(4)
+        frame.lightEstimate.getColorCorrection(colorCorrectionRgba, 0)
+
+        // Visualize augmented images.
+        drawAugmentedImages(frame, projmtx, viewmtx, colorCorrectionRgba)
     }
 
     private fun configureSession() {
@@ -392,230 +445,382 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         }
     }
 
-    /** Temporary arrays to prevent allocations in [createAnchor]. */
-    private val convertFloats = FloatArray(4)
-    private val convertFloatsOut = FloatArray(4)
+    // Draw frame when in non-AR mode. Called on the GL thread.
+    private fun onDrawFrameCamera2() {
+        val texture = sharedCamera!!.surfaceTexture
 
-    /**
-     * Create an anchor using (x, y) coordinates in the [Coordinates2d.IMAGE_PIXELS] coordinate space.
-     */
-    fun createAnchor(xImage: Float, yImage: Float, frame: Frame, camera: Camera): HitResult? {
-        // IMAGE_PIXELS -> VIEW
-        convertFloats[0] = xImage
-        convertFloats[1] = yImage
-        frame.transformCoordinates2d(
-            Coordinates2d.IMAGE_PIXELS,
-            convertFloats,
-            Coordinates2d.VIEW,
-            convertFloatsOut
-        )
-
-//        Log.d("carlos", "hitTest (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
-
-        // Conduct a hit test using the VIEW coordinates
-        val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
-
-        val result = hits.firstOrNull { hit ->
-            when (val trackable = hit.trackable!!) {
-                is Plane ->
-                    trackable.isPoseInPolygon(hit.hitPose) &&
-                            PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
-                is ArPoint -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                is InstantPlacementPoint -> false
-                // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
-                is DepthPoint -> false
-                else -> false
+        // ARCore may attach the SurfaceTexture to a different texture from the camera texture, so we
+        // need to manually reattach it to our desired texture.
+        if (isFirstFrameWithoutArcore.getAndSet(false)) {
+            try {
+                texture.detachFromGLContext()
+            } catch (e: RuntimeException) {
+                // Ignore if fails, it may not be attached yet.
             }
-        } ?: return null
-
-//    val result = hits.getOrNull(0) ?: return null
-        return result
-    }
-
-    fun createAnchor(xImage: Float, yImage: Float, frame: Frame, trackable: Trackable): HitResult? {
-        // IMAGE_PIXELS -> VIEW
-        convertFloats[0] = xImage
-        convertFloats[1] = yImage
-        frame.transformCoordinates2d(
-            Coordinates2d.IMAGE_PIXELS,
-            convertFloats,
-            Coordinates2d.VIEW,
-            convertFloatsOut
-        )
-
-//        Log.d("carlos", "hitTest (${convertFloatsOut[0]}, ${convertFloatsOut[1]})")
-
-        // Conduct a hit test using the VIEW coordinates
-        val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
-
-        val result = hits.firstOrNull { hit ->
-            hit.trackable == trackable
+            texture.attachToGLContext(backgroundRenderer.textureId)
         }
 
-        return result
+        // Update the surface.
+        texture.updateTexImage()
+
+        // Account for any difference between camera sensor orientation and display orientation.
+        val rotationDegrees = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
+
+        // Determine size of the camera preview image.
+        val size = session!!.cameraConfig.textureSize
+
+        // Determine aspect ratio of the output GL surface, accounting for the current display rotation
+        // relative to the camera sensor orientation of the device.
+        val displayAspectRatio =
+            displayRotationHelper!!.getCameraSensorRelativeViewportAspectRatio(cameraId)
+
+        // Render camera preview image to the GL surface.
+        backgroundRenderer.draw(size.width, size.height, displayAspectRatio, rotationDegrees)
     }
 
-    fun createAnchor(point: Vector3f, frame: Frame, camera: Camera): HitResult? {
-        val cameraPosition = camera.pose.translation
-        Log.d("carlos", "hitTest (${cameraPosition[0]}, ${cameraPosition[1]}, ${cameraPosition[2]}) => ${point}")
-
-        val hits = frame.hitTest(
-            cameraPosition,
-            0,
-            floatArrayOf(point.x, point.y, point.z),
-            0
-        )
-        Log.d("carlos", "hits: ${hits.map { it.trackable.javaClass.simpleName }}")
-
-        val result = hits.firstOrNull { hit ->
-            when (val trackable = hit.trackable!!) {
-                is Plane ->
-                    trackable.isPoseInPolygon(hit.hitPose) &&
-                            PlaneRenderer.calculateDistanceToPlane(hit.hitPose, camera.pose) > 0
-                is ArPoint -> false //trackable.orientationMode == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL
-                is InstantPlacementPoint -> false
-                // DepthPoints are only returned if Config.DepthMode is set to AUTOMATIC.
-                is DepthPoint -> false
-                else -> false
+    @Synchronized
+    private fun waitUntilCameraCaptureSessionIsActive() {
+        runBlocking {
+            while (captureSessionChangesPossible.isLocked) {
+                delay(100)
             }
-        } ?: return null
-
-    //    val result = hits.getOrNull(0) ?: return null
-        return result
+        }
     }
 
-    fun createCornerAnchor(xImage: Float, yImage: Float, distance: Float, frame: Frame): HitResult {
-        // IMAGE_PIXELS -> VIEW
-        convertFloats[0] = xImage
-        convertFloats[1] = yImage
-        frame.transformCoordinates2d(
-            Coordinates2d.IMAGE_PIXELS,
-            convertFloats,
-            Coordinates2d.VIEW,
-            convertFloatsOut
-        )
+    private fun resumeARCore() {
+        // Ensure that session is valid before triggering ARCore resume. Handles the case where the user
+        // manually uninstalls ARCore while the app is paused and then resumes.
+        if (session == null) {
+            return
+        }
 
-        // Conduct a hit test using the VIEW coordinates
-        return frame.hitTestInstantPlacement(convertFloatsOut[0], convertFloatsOut[1], distance).first()
+        try {
+            // To avoid flicker when resuming ARCore mode inform the renderer to not suppress rendering
+            // of the frames with zero timestamp.
+            backgroundRenderer.suppressTimestampZeroRendering(false)
+            // Resume ARCore.
+            session!!.resume()
+
+            // Set capture session callback while in AR mode.
+            sharedCamera!!.setCaptureCallback(cameraCaptureCallback, backgroundHandler)
+        } catch (e: CameraNotAvailableException) {
+            Log.e(TAG, "Failed to resume ARCore session", e)
+            return
+        }
     }
 
-    fun getWorldCoordinates(point: Point, frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, width: Int, height: Int, distance: Float): Vector3f {
-        val convertFloats = FloatArray(4)
-        val convertFloatsOut = FloatArray(4)
-
-        convertFloats[0] = point.x.toFloat()
-        convertFloats[1] = point.y.toFloat()
-        frame.transformCoordinates2d(
-            Coordinates2d.IMAGE_PIXELS,
-            convertFloats,
-            Coordinates2d.VIEW,
-            convertFloatsOut
-        )
-        return LineUtils.GetWorldCoords(
-            Vector2f(convertFloatsOut),
-            width.toFloat(),
-            height.toFloat(),
-            projmtx,
-            viewmtx,
-            distance
-        )
+    private fun pauseARCore() {
+        // Pause ARCore.
+        session!!.pause()
+        isFirstFrameWithoutArcore.set(true)
     }
 
-    fun getDistance(point: Point, frame: Frame, depthImage: Image): Float {
-        val depthIn = FloatArray(2)
-        val depthOut = FloatArray(2)
-        depthIn[0] = point.x.toFloat()
-        depthIn[1] = point.y.toFloat()
-        frame.transformCoordinates2d(
-            Coordinates2d.IMAGE_PIXELS,
-            depthIn,
-            Coordinates2d.TEXTURE_NORMALIZED,
-            depthOut
+    // Called when starting non-AR mode or switching to non-AR mode.
+    // Also called when app starts in AR mode, or resumes in AR mode.
+    private fun setRepeatingCaptureRequest() {
+        try {
+            captureSession!!.setRepeatingRequest(
+                previewCaptureRequestBuilder!!.build(), cameraCaptureCallback, backgroundHandler
+            )
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "Failed to set repeating request", e)
+        }
+    }
+
+    private fun createCameraPreviewSession() {
+        try {
+            session!!.setCameraTextureName(backgroundRenderer.textureId)
+
+            // Create an ARCore compatible capture request using `TEMPLATE_RECORD`.
+            previewCaptureRequestBuilder =
+                cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+
+            // Build surfaces list, starting with ARCore provided surfaces.
+            val surfaceList = sharedCamera!!.arCoreSurfaces
+
+            // Add a CPU image reader surface. On devices that don't support CPU image access, the image
+            // may arrive significantly later, or not arrive at all.
+            surfaceList.add(cpuImageReader!!.surface)
+
+            // Surface list should now contain three surfaces:
+            // 0. sharedCamera.getSurfaceTexture()
+            // 1. …
+            // 2. cpuImageReader.getSurface()
+
+            // Add ARCore surfaces and CPU image surface targets.
+            for (surface in surfaceList) {
+                previewCaptureRequestBuilder!!.addTarget(surface)
+            }
+
+            // Wrap our callback in a shared camera callback.
+            val wrappedCallback =
+                sharedCamera!!.createARSessionStateCallback(
+                    cameraSessionStateCallback,
+                    backgroundHandler
+                )
+
+            // Create camera capture session for camera preview using ARCore wrapped callback.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                cameraDevice!!.createCaptureSession(
+                    SessionConfiguration(
+                        SESSION_REGULAR,
+                        surfaceList.map { OutputConfiguration(it) },
+                        Executors.newSingleThreadExecutor(),
+                        wrappedCallback
+                    )
+                )
+            } else {
+                cameraDevice!!.createCaptureSession(surfaceList, wrappedCallback, backgroundHandler)
+            }
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "CameraAccessException", e)
+        }
+    }
+
+    // Start background handler thread, used to run callbacks without blocking UI thread.
+    private fun startBackgroundThread() {
+        backgroundThread = HandlerThread("sharedCameraBackground")
+        backgroundThread!!.start()
+        backgroundHandler = Handler(backgroundThread!!.looper)
+    }
+
+    // Stop background handler thread.
+    private fun stopBackgroundThread() {
+        if (backgroundThread != null) {
+            backgroundThread!!.quitSafely()
+            try {
+                backgroundThread!!.join()
+                backgroundThread = null
+                backgroundHandler = null
+            } catch (e: InterruptedException) {
+                Log.e(TAG, "Interrupted while trying to join background handler thread", e)
+            }
+        }
+    }
+
+    // Perform various checks, then open camera device and create CPU image reader.
+    private fun openCamera() {
+        // Don't open camera if already opened.
+        if (cameraDevice != null) {
+            return
+        }
+
+        // Verify CAMERA_PERMISSION has been granted.
+        if (!CameraPermissionHelper.hasCameraPermission(this)) {
+            CameraPermissionHelper.requestCameraPermission(this)
+            return
+        }
+
+        // Make sure that ARCore is installed, up to date, and supported on this device.
+        if (installRequested) {
+            return
+        }
+
+        if (session == null) {
+            try {
+                // Create ARCore session that supports camera sharing.
+                session = Session(this, EnumSet.of(Session.Feature.SHARED_CAMERA))
+            } catch (e: Exception) {
+                errorCreatingSession = true
+                Log.e(TAG, "Failed to create ARCore session that supports camera sharing", e)
+                return
+            }
+
+            errorCreatingSession = false
+
+            // Enable auto focus mode while ARCore is running.
+            configureSession()
+        }
+
+        // Store the ARCore shared camera reference.
+        sharedCamera = session!!.sharedCamera
+
+        // Store the ID of the camera used by ARCore.
+        cameraId = session!!.cameraConfig.cameraId
+
+        // Use the currently configured CPU image size.
+        val desiredCpuImageSize = session!!.cameraConfig.imageSize
+        cpuImageReader =
+            ImageReader.newInstance(
+                desiredCpuImageSize.width,
+                desiredCpuImageSize.height,
+                ImageFormat.YUV_420_888,
+                2
+            )
+        cpuImageReader!!.setOnImageAvailableListener(this, backgroundHandler)
+
+        // When ARCore is running, make sure it also updates our CPU image surface.
+        sharedCamera!!.setAppSurfaces(
+            this.cameraId, listOf(
+                cpuImageReader!!.surface
+            )
         )
-        val depthCenterPoint = Point(
-            (depthOut[0] * depthImage.width).toInt(),
-            (depthOut[1] * depthImage.height).toInt()
-        )
-        Log.d(
-            "carlos",
-            "converting depth: (${depthIn[0]}, ${depthIn[1]}) => (${depthOut[0]}, ${depthOut[1]})"
-        )
-        Log.d(
-            "carlos",
-            "getting depth: ${depthImage.width} x ${depthImage.height} (${depthCenterPoint.x}, ${depthCenterPoint.y})"
-        )
-        return getMetersDepth(
-            depthImage,
-            depthCenterPoint.x,
-            depthCenterPoint.y
-        )
+
+        try {
+            // Wrap our callback in a shared camera callback.
+
+            val wrappedCallback =
+                sharedCamera!!.createARDeviceStateCallback(cameraDeviceCallback, backgroundHandler)
+
+            // Store a reference to the camera system service.
+            cameraManager = this.getSystemService(CAMERA_SERVICE) as CameraManager
+
+            // Get the characteristics for the ARCore camera.
+//            val characteristics = cameraManager!!.getCameraCharacteristics(this.cameraId!!)
+
+            // Prevent app crashes due to quick operations on camera open / close by waiting for the
+            // capture session's onActive() callback to be triggered.
+            captureSessionChangesPossible.tryLock()
+
+            // Open the camera device using the ARCore wrapped callback.
+            cameraManager!!.openCamera(cameraId!!, wrappedCallback, backgroundHandler)
+        } catch (e: CameraAccessException) {
+            Log.e(TAG, "Failed to open camera", e)
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Failed to open camera", e)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Failed to open camera", e)
+        }
+    }
+
+    // Close the camera device.
+    private fun closeCamera() {
+        if (captureSession != null) {
+            captureSession!!.close()
+            captureSession = null
+        }
+        if (cameraDevice != null) {
+            waitUntilCameraCaptureSessionIsActive()
+            safeToExitApp.close()
+            cameraDevice!!.close()
+            safeToExitApp.block()
+        }
+        if (cpuImageReader != null) {
+            cpuImageReader!!.close()
+            cpuImageReader = null
+        }
+    }
+
+    // CPU image reader callback.
+    override fun onImageAvailable(imageReader: ImageReader) {
+        val image = imageReader.acquireLatestImage()
+        if (image == null) {
+            Log.w(TAG, "onImageAvailable: Skipping null image.")
+            return
+        }
+
+        image.close()
+    }
+
+    // Camera device state callback.
+    private val cameraDeviceCallback: CameraDevice.StateCallback =
+        object : CameraDevice.StateCallback() {
+            override fun onOpened(cameraDevice: CameraDevice) {
+                Log.d(TAG, "Camera device ID " + cameraDevice.id + " opened.")
+                this@AugmentedImageActivity.cameraDevice = cameraDevice
+                createCameraPreviewSession()
+            }
+
+            override fun onClosed(cameraDevice: CameraDevice) {
+                Log.d(TAG, "Camera device ID " + cameraDevice.id + " closed.")
+                this@AugmentedImageActivity.cameraDevice = null
+                safeToExitApp.open()
+            }
+
+            override fun onDisconnected(cameraDevice: CameraDevice) {
+                Log.w(TAG, "Camera device ID " + cameraDevice.id + " disconnected.")
+                cameraDevice.close()
+                this@AugmentedImageActivity.cameraDevice = null
+            }
+
+            override fun onError(cameraDevice: CameraDevice, error: Int) {
+                Log.e(TAG, "Camera device ID " + cameraDevice.id + " error " + error)
+                cameraDevice.close()
+                this@AugmentedImageActivity.cameraDevice = null
+                // Fatal error. Quit application.
+                finish()
+            }
+        }
+
+    // Repeating camera capture session state callback.
+    private val cameraSessionStateCallback: CameraCaptureSession.StateCallback =
+        object : CameraCaptureSession.StateCallback() {
+            // Called when the camera capture session is first configured after the app
+            // is initialized, and again each time the activity is resumed.
+            override fun onConfigured(session: CameraCaptureSession) {
+                Log.d(TAG, "Camera capture session configured.")
+                captureSession = session
+                setRepeatingCaptureRequest()
+            }
+
+            override fun onSurfacePrepared(
+                session: CameraCaptureSession, surface: Surface
+            ) {
+                Log.d(TAG, "Camera capture surface prepared.")
+            }
+
+            override fun onReady(session: CameraCaptureSession) {
+                Log.d(TAG, "Camera capture session ready.")
+            }
+
+            override fun onActive(session: CameraCaptureSession) {
+                Log.d(TAG, "Camera capture session active.")
+                resumeARCore()
+
+                captureSessionChangesPossible.unlock()
+            }
+
+            override fun onCaptureQueueEmpty(session: CameraCaptureSession) {
+                Log.w(TAG, "Camera capture queue empty.")
+            }
+
+            override fun onClosed(session: CameraCaptureSession) {
+                Log.d(TAG, "Camera capture session closed.")
+            }
+
+            override fun onConfigureFailed(session: CameraCaptureSession) {
+                Log.e(TAG, "Failed to configure camera capture session.")
+            }
+        }
+
+    // Repeating camera capture session capture callback.
+    private val cameraCaptureCallback: CaptureCallback = object : CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            shouldUpdateSurfaceTexture.set(true)
+        }
+
+        override fun onCaptureBufferLost(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            target: Surface,
+            frameNumber: Long
+        ) {
+            Log.e(TAG, "onCaptureBufferLost: $frameNumber")
+        }
+
+        override fun onCaptureFailed(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            failure: CaptureFailure
+        ) {
+            Log.e(TAG, "onCaptureFailed: " + failure.frameNumber + " " + failure.reason)
+        }
+
+        override fun onCaptureSequenceAborted(
+            session: CameraCaptureSession, sequenceId: Int
+        ) {
+            Log.e(TAG, "onCaptureSequenceAborted: $sequenceId $session")
+        }
     }
 
     companion object {
         private val TAG: String = AugmentedImageActivity::class.java.simpleName
     }
 }
-
-fun List<Point>.isInside(x: Float, y: Float): Boolean {
-    return x > this[0].x
-            && x < this[1].x
-            && x > this[3].x
-            && x < this[2].x
-            && y > this[0].y
-            && y < this[3].y
-            && y > this[1].y
-            && y < this[2].y
-}
-
-fun intersectionPoint(line1: Pair<Point, Point>, line2: Pair<Point, Point>): Point {
-    val p0_x = line1.first.x
-    val p0_y = line1.first.y
-    val p1_x = line1.second.x
-    val p1_y = line1.second.y
-
-    val p2_x = line2.first.x
-    val p2_y = line2.first.y
-    val p3_x = line2.second.x
-    val p3_y = line2.second.y
-
-    val s1_x = p1_x - p0_x
-    val s1_y = p1_y - p0_y
-    val s2_x = p3_x - p2_x
-    val s2_y = p3_y - p2_y
-
-    val t = (s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)).toFloat() / (-s2_x * s1_y + s1_x * s2_y).toFloat()
-
-    return Point((p0_x + (t * s1_x)).toInt(), (p0_y + (t * s1_y)).toInt())
-}
-
-/** Obtain the depth in millimeters for [depthImage] at coordinates ([x], [y]). */
-fun getMetersDepth(depthImage: Image, x: Int, y: Int): Float {
-    // The depth image has a single plane, which stores depth for each
-    // pixel as 16-bit unsigned integers.
-    val plane = depthImage.planes[0]
-    val byteIndex = x * plane.pixelStride + y * plane.rowStride
-    val buffer = plane.buffer.order(ByteOrder.nativeOrder())
-    val depthSample = buffer.getShort(byteIndex)
-    return (depthSample.toDouble() / 1000.0).toFloat()
-}
-
-fun Frame.tryAcquireCameraImage() =
-    try {
-        acquireCameraImage()
-    } catch (e: NotYetAvailableException) {
-        null
-    } catch (e: Throwable) {
-        throw e
-    }
-
-fun Frame.tryAcquireDepthImage() =
-    try {
-        acquireDepthImage16Bits()
-    } catch (e: NotYetAvailableException) {
-        null
-    } catch (e: Throwable) {
-        throw e
-    }
 
 data class DetectedObjectAnchor(
     val anchor: Anchor,
