@@ -66,6 +66,7 @@ import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import com.google.ar.core.examples.java.common.rendering.PointCloudRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
+import com.google.ar.core.exceptions.SessionNotPausedException
 import com.google.ar.core.exceptions.UnavailableException
 import java.io.IOException
 import java.util.Arrays
@@ -73,10 +74,15 @@ import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * This is a simple example that demonstrates how to use the Camera2 API while sharing camera access
@@ -97,7 +103,7 @@ import kotlinx.coroutines.sync.withLock
 class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImageAvailableListener,
     OnFrameAvailableListener {
     // Whether the app is currently in AR mode. Initial value determines initial state.
-    private var arMode = false
+    private var arMode = true
 
     // Whether the app has just entered non-AR mode.
     private val isFirstFrameWithoutArcore = AtomicBoolean(true)
@@ -162,6 +168,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     private var cpuImagesProcessed = 0
 
     // Various helper classes, see hello_ar_java sample to learn more.
+    private var arcoreSwitch: Switch? = null
     private val messageSnackbarHelper = SnackbarHelper()
     private var displayRotationHelper: DisplayRotationHelper? = null
     private val trackingStateHelper = TrackingStateHelper(this)
@@ -190,6 +197,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     private val safeToExitApp = ConditionVariable()
 
     private class ColoredAnchor(val anchor: Anchor, val color: FloatArray)
+
+    private var job: Job? = null
+    private val coroutineScope = MainScope()
 
     // Camera device state callback.
     private val cameraDeviceCallback: CameraDevice.StateCallback =
@@ -334,24 +344,28 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         statusTextView = findViewById(R.id.text_view)
 
         // Switch to allow pausing and resuming of ARCore.
-        val arcoreSwitch = findViewById<Switch>(R.id.arcore_switch)
+        arcoreSwitch = findViewById<Switch>(R.id.arcore_switch)
         // Ensure initial switch position is set based on initial value of `arMode` variable.
-        arcoreSwitch.isChecked = arMode
-        arcoreSwitch.setOnCheckedChangeListener { view: CompoundButton?, checked: Boolean ->
+        arcoreSwitch!!.isChecked = arMode
+        arcoreSwitch!!.setOnCheckedChangeListener { view: CompoundButton?, checked: Boolean ->
             Log.i(TAG, "Switching to " + (if (checked) "AR" else "non-AR") + " mode.")
-            if (checked) {
-                arMode = true
-                resumeARCore()
-            } else {
-                arMode = false
-                pauseARCore()
-                resumeCamera2()
-            }
+            setArCoreEnabled(checked)
             updateSnackbarMessage()
         }
 
         messageSnackbarHelper.setMaxLines(4)
         updateSnackbarMessage()
+    }
+
+    private fun setArCoreEnabled(isEnabled: Boolean) {
+        if (isEnabled) {
+            arMode = true
+            resumeARCore()
+        } else {
+            arMode = false
+            pauseARCore()
+            resumeCamera2()
+        }
     }
 
     override fun onDestroy() {
@@ -422,7 +436,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 // of the frames with zero timestamp.
                 backgroundRenderer.suppressTimestampZeroRendering(false)
                 // Resume ARCore.
-                sharedSession!!.resume()
+                try {
+                    sharedSession!!.resume()
+                } catch (e: SessionNotPausedException) { }
                 arcoreActive = true
                 updateSnackbarMessage()
 
@@ -797,7 +813,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         displayRotationHelper!!.updateSessionIfNeeded(sharedSession)
 
         try {
-            if (arMode) {
+            if (arMode && job?.isActive != true) {
                 onDrawFrameARCore()
             } else {
                 onDrawFrameCamera2()
@@ -928,45 +944,50 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
     // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
     private fun handleTap(frame: Frame, camera: Camera) {
         val tap = tapHelper!!.poll()
-        if (tap != null && camera.trackingState == TrackingState.TRACKING) {
-            for (hit in frame.hitTest(tap)) {
-                // Check if any plane was hit, and if it was hit inside the plane polygon
-                val trackable = hit.trackable
-                // Creates an anchor if a plane or an oriented point was hit.
-                if ((trackable is Plane
-                            && trackable.isPoseInPolygon(hit.hitPose)
-                            && (PlaneRenderer.calculateDistanceToPlane(
-                        hit.hitPose,
-                        camera.pose
-                    ) > 0))
-                    || (trackable is Point
-                            && trackable.orientationMode
-                            == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
-                ) {
-                    // Hits are sorted by depth. Consider only closest hit on a plane or oriented point.
-                    // Cap the number of objects created. This avoids overloading both the
-                    // rendering system and ARCore.
-                    if (anchors.size >= 20) {
-                        anchors[0].anchor.detach()
-                        anchors.removeAt(0)
-                    }
+        if (job?.isActive != true && tap != null && camera.trackingState == TrackingState.TRACKING) {
+            job = coroutineScope.launch {
+//                withContext(Dispatchers.Main) { arcoreSwitch!!.isChecked = false }
+//                setArCoreEnabled(false)
+                delay(500)
+                for (hit in frame.hitTest(tap)) {
+                    // Check if any plane was hit, and if it was hit inside the plane polygon
+                    val trackable = hit.trackable
+                    // Creates an anchor if a plane or an oriented point was hit.
+                    if ((trackable is Plane
+                                && trackable.isPoseInPolygon(hit.hitPose)
+                                && (PlaneRenderer.calculateDistanceToPlane(
+                            hit.hitPose,
+                            camera.pose
+                        ) > 0))
+                        || (trackable is Point
+                                && trackable.orientationMode
+                                == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)
+                    ) {
+                        // Hits are sorted by depth. Consider only closest hit on a plane or oriented point.
+                        // Cap the number of objects created. This avoids overloading both the
+                        // rendering system and ARCore.
+                        if (anchors.size >= 20) {
+                            anchors[0].anchor.detach()
+                            anchors.removeAt(0)
+                        }
 
-                    // Assign a color to the object for rendering based on the trackable type
-                    // this anchor attached to. For AR_TRACKABLE_POINT, it's blue color, and
-                    // for AR_TRACKABLE_PLANE, it's green color.
-                    val objColor = if (trackable is Point) {
-                        floatArrayOf(66.0f, 133.0f, 244.0f, 255.0f)
-                    } else if (trackable is Plane) {
-                        floatArrayOf(139.0f, 195.0f, 74.0f, 255.0f)
-                    } else {
-                        DEFAULT_COLOR
-                    }
+                        // Assign a color to the object for rendering based on the trackable type
+                        // this anchor attached to. For AR_TRACKABLE_POINT, it's blue color, and
+                        // for AR_TRACKABLE_PLANE, it's green color.
+                        val objColor = if (trackable is Point) {
+                            floatArrayOf(66.0f, 133.0f, 244.0f, 255.0f)
+                        } else if (trackable is Plane) {
+                            floatArrayOf(139.0f, 195.0f, 74.0f, 255.0f)
+                        } else {
+                            DEFAULT_COLOR
+                        }
 
-                    // Adding an Anchor tells ARCore that it should track this position in
-                    // space. This anchor is created on the Plane to place the 3D model
-                    // in the correct position relative both to the world and to the plane.
-                    anchors.add(ColoredAnchor(hit.createAnchor(), objColor))
-                    break
+                        // Adding an Anchor tells ARCore that it should track this position in
+                        // space. This anchor is created on the Plane to place the 3D model
+                        // in the correct position relative both to the world and to the plane.
+                        anchors.add(ColoredAnchor(hit.createAnchor(), objColor))
+                        break
+                    }
                 }
             }
         }
