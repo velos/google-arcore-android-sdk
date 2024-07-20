@@ -57,7 +57,6 @@ import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
-import com.google.ar.core.exceptions.SessionNotPausedException
 import com.google.ar.core.exceptions.UnavailableException
 import java.io.IOException
 import java.util.EnumSet
@@ -120,10 +119,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
     // Ensure GL surface draws only occur when new frames are available.
     private val shouldUpdateSurfaceTexture = AtomicBoolean(false)
-
-    // Whether ARCore is currently active.
-    // TODO is this needed?
-    private var arcoreActive = false
 
     // Whether the GL surface has been created.
     private var surfaceCreated = false
@@ -220,9 +215,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
             override fun onActive(session: CameraCaptureSession) {
                 Log.d(TAG, "Camera capture session active.")
-                if (!arcoreActive) {
-                    resumeARCore()
-                }
+                resumeARCore()
 
                 captureSessionChangesPossible.unlock()
             }
@@ -347,33 +340,25 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             return
         }
 
-        if (!arcoreActive) {
-            try {
-                // To avoid flicker when resuming ARCore mode inform the renderer to not suppress rendering
-                // of the frames with zero timestamp.
-                backgroundRenderer.suppressTimestampZeroRendering(false)
-                // Resume ARCore.
-                try {
-                    sharedSession!!.resume()
-                } catch (_: SessionNotPausedException) { }
-                arcoreActive = true
+        try {
+            // To avoid flicker when resuming ARCore mode inform the renderer to not suppress rendering
+            // of the frames with zero timestamp.
+            backgroundRenderer.suppressTimestampZeroRendering(false)
+            // Resume ARCore.
+            sharedSession!!.resume()
 
-                // Set capture session callback while in AR mode.
-                sharedCamera!!.setCaptureCallback(cameraCaptureCallback, backgroundHandler)
-            } catch (e: CameraNotAvailableException) {
-                Log.e(TAG, "Failed to resume ARCore session", e)
-                return
-            }
+            // Set capture session callback while in AR mode.
+            sharedCamera!!.setCaptureCallback(cameraCaptureCallback, backgroundHandler)
+        } catch (e: CameraNotAvailableException) {
+            Log.e(TAG, "Failed to resume ARCore session", e)
+            return
         }
     }
 
     private fun pauseARCore() {
-        if (arcoreActive) {
-            // Pause ARCore.
-            sharedSession!!.pause()
-            isFirstFrameWithoutArcore.set(true)
-            arcoreActive = false
-        }
+        // Pause ARCore.
+        sharedSession!!.pause()
+        isFirstFrameWithoutArcore.set(true)
     }
 
     // Called when starting non-AR mode or switching to non-AR mode.
@@ -681,7 +666,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     // Draw frame when in AR mode. Called on the GL thread.
     @Throws(CameraNotAvailableException::class)
     fun onDrawFrameARCore() {
-        if (!arcoreActive) {
+        if (sharedSession == null) {
             // ARCore not yet active, so nothing to draw yet.
             return
         }
