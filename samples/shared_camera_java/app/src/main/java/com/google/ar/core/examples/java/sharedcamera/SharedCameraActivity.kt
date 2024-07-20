@@ -24,10 +24,14 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR
 import android.media.ImageReader
 import android.media.ImageReader.OnImageAvailableListener
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
 import android.os.ConditionVariable
 import android.os.Handler
@@ -60,6 +64,7 @@ import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.UnavailableException
 import java.io.IOException
 import java.util.EnumSet
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -406,7 +411,18 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 )
 
             // Create camera capture session for camera preview using ARCore wrapped callback.
-            cameraDevice!!.createCaptureSession(surfaceList, wrappedCallback, backgroundHandler)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                cameraDevice!!.createCaptureSession(
+                    SessionConfiguration(
+                        SESSION_REGULAR,
+                        surfaceList.map { OutputConfiguration(it) },
+                        Executors.newSingleThreadExecutor(),
+                        wrappedCallback
+                    )
+                )
+            } else {
+                cameraDevice!!.createCaptureSession(surfaceList, wrappedCallback, backgroundHandler)
+            }
         } catch (e: CameraAccessException) {
             Log.e(TAG, "CameraAccessException", e)
         }
