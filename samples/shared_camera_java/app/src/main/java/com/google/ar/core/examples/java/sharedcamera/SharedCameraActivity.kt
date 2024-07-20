@@ -16,8 +16,6 @@
 package com.google.ar.core.examples.java.sharedcamera
 
 import android.graphics.ImageFormat
-import android.graphics.SurfaceTexture
-import android.graphics.SurfaceTexture.OnFrameAvailableListener
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCaptureSession.CaptureCallback
@@ -30,17 +28,12 @@ import android.media.ImageReader
 import android.media.ImageReader.OnImageAvailableListener
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
-import android.os.Build
 import android.os.Bundle
 import android.os.ConditionVariable
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
-import android.widget.CompoundButton
-import android.widget.LinearLayout
-import android.widget.Switch
-import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.ar.core.Anchor
@@ -58,31 +51,25 @@ import com.google.ar.core.TrackingState
 import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper
 import com.google.ar.core.examples.java.common.helpers.DisplayRotationHelper
 import com.google.ar.core.examples.java.common.helpers.FullScreenHelper
-import com.google.ar.core.examples.java.common.helpers.SnackbarHelper
 import com.google.ar.core.examples.java.common.helpers.TapHelper
 import com.google.ar.core.examples.java.common.helpers.TrackingStateHelper
 import com.google.ar.core.examples.java.common.rendering.BackgroundRenderer
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import com.google.ar.core.examples.java.common.rendering.PlaneRenderer
-import com.google.ar.core.examples.java.common.rendering.PointCloudRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.SessionNotPausedException
 import com.google.ar.core.exceptions.UnavailableException
 import java.io.IOException
-import java.util.Arrays
 import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 
 /**
  * This is a simple example that demonstrates how to use the Camera2 API while sharing camera access
@@ -100,22 +87,12 @@ import kotlinx.coroutines.withContext
  *  * Requesting CAMERA_PERMISSION when app starts, and each time the app is resumed
  *
  */
-class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImageAvailableListener,
-    OnFrameAvailableListener {
-    // Whether the app is currently in AR mode. Initial value determines initial state.
-    private var arMode = true
-
+class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImageAvailableListener {
     // Whether the app has just entered non-AR mode.
     private val isFirstFrameWithoutArcore = AtomicBoolean(true)
 
     // GL Surface used to draw camera preview image.
     private var surfaceView: GLSurfaceView? = null
-
-    // Text view for displaying on screen status message.
-    private var statusTextView: TextView? = null
-
-    // Linear layout that contains preview image and status text.
-    private var imageTextLinearLayout: LinearLayout? = null
 
     // ARCore session that supports camera sharing.
     private var sharedSession: Session? = null
@@ -125,9 +102,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
     // Reference to the camera system service.
     private var cameraManager: CameraManager? = null
-
-    // A list of CaptureRequest keys that can cause delays when switching between AR and non-AR modes.
-    private var keysThatCanCauseCaptureDelaysWhenModified: List<CaptureRequest.Key<*>>? = null
 
     // Camera device. Used by both non-AR and AR modes.
     private var cameraDevice: CameraDevice? = null
@@ -148,6 +122,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     private val shouldUpdateSurfaceTexture = AtomicBoolean(false)
 
     // Whether ARCore is currently active.
+    // TODO is this needed?
     private var arcoreActive = false
 
     // Whether the GL surface has been created.
@@ -164,12 +139,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     // Image reader that continuously processes CPU images.
     private var cpuImageReader: ImageReader? = null
 
-    // Total number of CPU images processed.
-    private var cpuImagesProcessed = 0
-
     // Various helper classes, see hello_ar_java sample to learn more.
-    private var arcoreSwitch: Switch? = null
-    private val messageSnackbarHelper = SnackbarHelper()
     private var displayRotationHelper: DisplayRotationHelper? = null
     private val trackingStateHelper = TrackingStateHelper(this)
     private var tapHelper: TapHelper? = null
@@ -177,17 +147,13 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     // Renderers, see hello_ar_java sample to learn more.
     private val backgroundRenderer = BackgroundRenderer()
     private val virtualObject = ObjectRenderer()
-    private val virtualObjectShadow = ObjectRenderer()
     private val planeRenderer = PlaneRenderer()
-    private val pointCloudRenderer = PointCloudRenderer()
 
     // Temporary matrix allocated here to reduce number of allocations for each frame.
     private val anchorMatrix = FloatArray(16)
 
     // Anchors created from taps, see hello_ar_java sample to learn more.
-    private val anchors = ArrayList<ColoredAnchor>()
-
-    private val automatorRun = AtomicBoolean(false)
+    private var anchor: ColoredAnchor? = null
 
     // Prevent any changes to camera capture session after CameraManager.openCamera() is called, but
     // before camera device becomes active.
@@ -232,20 +198,14 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         }
 
     // Repeating camera capture session state callback.
-    var cameraSessionStateCallback: CameraCaptureSession.StateCallback =
+    private val cameraSessionStateCallback: CameraCaptureSession.StateCallback =
         object : CameraCaptureSession.StateCallback() {
             // Called when the camera capture session is first configured after the app
             // is initialized, and again each time the activity is resumed.
             override fun onConfigured(session: CameraCaptureSession) {
                 Log.d(TAG, "Camera capture session configured.")
                 captureSession = session
-                if (arMode) {
-                    setRepeatingCaptureRequest()
-                    // Note, resumeARCore() must be called in onActive(), not here.
-                } else {
-                    // Calls `setRepeatingCaptureRequest()`.
-                    resumeCamera2()
-                }
+                setRepeatingCaptureRequest()
             }
 
             override fun onSurfacePrepared(
@@ -260,13 +220,11 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
             override fun onActive(session: CameraCaptureSession) {
                 Log.d(TAG, "Camera capture session active.")
-                if (arMode && !arcoreActive) {
+                if (!arcoreActive) {
                     resumeARCore()
                 }
 
                 captureSessionChangesPossible.unlock()
-
-                updateSnackbarMessage()
             }
 
             override fun onCaptureQueueEmpty(session: CameraCaptureSession) {
@@ -320,13 +278,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val extraBundle = intent.extras
-        if (extraBundle != null && 1 == extraBundle.getShort(AUTOMATOR_KEY, AUTOMATOR_DEFAULT)
-                .toInt()
-        ) {
-            automatorRun.set(true)
-        }
-
         // GL surface view that renders camera preview image.
         surfaceView = findViewById(R.id.glsurfaceview)
         surfaceView!!.setPreserveEGLContextOnPause(true)
@@ -339,33 +290,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         displayRotationHelper = DisplayRotationHelper(this)
         tapHelper = TapHelper(this)
         surfaceView!!.setOnTouchListener(tapHelper)
-
-        imageTextLinearLayout = findViewById(R.id.image_text_layout)
-        statusTextView = findViewById(R.id.text_view)
-
-        // Switch to allow pausing and resuming of ARCore.
-        arcoreSwitch = findViewById<Switch>(R.id.arcore_switch)
-        // Ensure initial switch position is set based on initial value of `arMode` variable.
-        arcoreSwitch!!.isChecked = arMode
-        arcoreSwitch!!.setOnCheckedChangeListener { view: CompoundButton?, checked: Boolean ->
-            Log.i(TAG, "Switching to " + (if (checked) "AR" else "non-AR") + " mode.")
-            setArCoreEnabled(checked)
-            updateSnackbarMessage()
-        }
-
-        messageSnackbarHelper.setMaxLines(4)
-        updateSnackbarMessage()
-    }
-
-    private fun setArCoreEnabled(isEnabled: Boolean) {
-        if (isEnabled) {
-            arMode = true
-            resumeARCore()
-        } else {
-            arMode = false
-            pauseARCore()
-            resumeCamera2()
-        }
     }
 
     override fun onDestroy() {
@@ -410,17 +334,10 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         surfaceView!!.onPause()
         waitUntilCameraCaptureSessionIsActive()
         displayRotationHelper!!.onPause()
-        if (arMode) {
-            pauseARCore()
-        }
+        pauseARCore()
         closeCamera()
         stopBackgroundThread()
         super.onPause()
-    }
-
-    private fun resumeCamera2() {
-        setRepeatingCaptureRequest()
-        sharedCamera!!.surfaceTexture.setOnFrameAvailableListener(this)
     }
 
     private fun resumeARCore() {
@@ -438,9 +355,8 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 // Resume ARCore.
                 try {
                     sharedSession!!.resume()
-                } catch (e: SessionNotPausedException) { }
+                } catch (_: SessionNotPausedException) { }
                 arcoreActive = true
-                updateSnackbarMessage()
 
                 // Set capture session callback while in AR mode.
                 sharedCamera!!.setCaptureCallback(cameraCaptureCallback, backgroundHandler)
@@ -457,25 +373,13 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             sharedSession!!.pause()
             isFirstFrameWithoutArcore.set(true)
             arcoreActive = false
-            updateSnackbarMessage()
         }
-    }
-
-    private fun updateSnackbarMessage() {
-        messageSnackbarHelper.showMessage(
-            this,
-            if (arcoreActive
-            ) "ARCore is active.\nSearch for plane, then tap to place a 3D model."
-            else "ARCore is paused.\nCamera effects enabled."
-        )
     }
 
     // Called when starting non-AR mode or switching to non-AR mode.
     // Also called when app starts in AR mode, or resumes in AR mode.
     private fun setRepeatingCaptureRequest() {
         try {
-            setCameraEffects(previewCaptureRequestBuilder)
-
             captureSession!!.setRepeatingRequest(
                 previewCaptureRequestBuilder!!.build(), cameraCaptureCallback, backgroundHandler
             )
@@ -487,7 +391,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     private fun createCameraPreviewSession() {
         try {
             sharedSession!!.setCameraTextureName(backgroundRenderer.textureId)
-            sharedCamera!!.surfaceTexture.setOnFrameAvailableListener(this)
 
             // Create an ARCore compatible capture request using `TEMPLATE_RECORD`.
             previewCaptureRequestBuilder =
@@ -569,9 +472,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 sharedSession = Session(this, EnumSet.of(Session.Feature.SHARED_CAMERA))
             } catch (e: Exception) {
                 errorCreatingSession = true
-                messageSnackbarHelper.showError(
-                    this, "Failed to create ARCore session that supports camera sharing"
-                )
                 Log.e(TAG, "Failed to create ARCore session that supports camera sharing", e)
                 return
             }
@@ -618,17 +518,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             cameraManager = this.getSystemService(CAMERA_SERVICE) as CameraManager
 
             // Get the characteristics for the ARCore camera.
-            val characteristics = cameraManager!!.getCameraCharacteristics(this.cameraId!!)
-
-            // On Android P and later, get list of keys that are difficult to apply per-frame and can
-            // result in unexpected delays when modified during the capture session lifetime.
-            if (Build.VERSION.SDK_INT >= 28) {
-                keysThatCanCauseCaptureDelaysWhenModified = characteristics.availableSessionKeys
-                if (keysThatCanCauseCaptureDelaysWhenModified == null) {
-                    // Initialize the list to an empty list if getAvailableSessionKeys() returns null.
-                    keysThatCanCauseCaptureDelaysWhenModified = ArrayList()
-                }
-            }
+//            val characteristics = cameraManager!!.getCameraCharacteristics(this.cameraId!!)
 
             // Prevent app crashes due to quick operations on camera open / close by waiting for the
             // capture session's onActive() callback to be triggered.
@@ -642,45 +532,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             Log.e(TAG, "Failed to open camera", e)
         } catch (e: SecurityException) {
             Log.e(TAG, "Failed to open camera", e)
-        }
-    }
-
-    private fun <T> checkIfKeyCanCauseDelay(key: CaptureRequest.Key<T>): Boolean {
-        if (Build.VERSION.SDK_INT >= 28) {
-            // On Android P and later, return true if key is difficult to apply per-frame.
-            return keysThatCanCauseCaptureDelaysWhenModified!!.contains(key)
-        } else {
-            // On earlier Android versions, log a warning since there is no API to determine whether
-            // the key is difficult to apply per-frame. Certain keys such as CONTROL_AE_TARGET_FPS_RANGE
-            // are known to cause a noticeable delay on certain devices.
-            // If avoiding unexpected capture delays when switching between non-AR and AR modes is
-            // important, verify the runtime behavior on each pre-Android P device on which the app will
-            // be distributed. Note that this device-specific runtime behavior may change when the
-            // device's operating system is updated.
-            Log.w(
-                TAG,
-                "Changing "
-                        + key
-                        + " may cause a noticeable capture delay. Please verify actual runtime behavior on"
-                        + " specific pre-Android P devices that this app will be distributed on."
-            )
-            // Allow the change since we're unable to determine whether it can cause unexpected delays.
-            return false
-        }
-    }
-
-    // If possible, apply effect in non-AR mode, to help visually distinguish between from AR mode.
-    private fun setCameraEffects(captureBuilder: CaptureRequest.Builder?) {
-        if (checkIfKeyCanCauseDelay(CaptureRequest.CONTROL_EFFECT_MODE)) {
-            Log.w(
-                TAG,
-                "Not setting CONTROL_EFFECT_MODE since it can cause delays between transitions."
-            )
-        } else {
-            Log.d(TAG, "Setting CONTROL_EFFECT_MODE to SEPIA in non-AR mode.")
-            captureBuilder!!.set(
-                CaptureRequest.CONTROL_EFFECT_MODE, CaptureRequest.CONTROL_EFFECT_MODE_SEPIA
-            )
         }
     }
 
@@ -702,11 +553,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         }
     }
 
-    // Surface texture on frame available callback, used only in non-AR mode.
-    override fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
-        // Log.d(TAG, "onFrameAvailable()");
-    }
-
     // CPU image reader callback.
     override fun onImageAvailable(imageReader: ImageReader) {
         val image = imageReader.acquireLatestImage()
@@ -716,18 +562,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         }
 
         image.close()
-        cpuImagesProcessed++
-
-        // Reduce the screen update to once every two seconds with 30fps if running as automated test.
-        if (!automatorRun.get() || (automatorRun.get() && cpuImagesProcessed % 60 == 0)) {
-            runOnUiThread {
-                statusTextView!!.text = """CPU images processed: $cpuImagesProcessed
-
-Mode: ${if (arMode) "AR" else "non-AR"} 
-ARCore active: $arcoreActive 
-Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
-            }
-        }
     }
 
     // Android permission request callback.
@@ -770,16 +604,9 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
             // Create the camera preview image texture. Used in non-AR and AR mode.
             backgroundRenderer.createOnGlThread(this)
             planeRenderer.createOnGlThread(this, "models/trigrid.png")
-            pointCloudRenderer.createOnGlThread(this)
 
             virtualObject.createOnGlThread(this, "models/andy.obj", "models/andy.png")
             virtualObject.setMaterialProperties(0.0f, 2.0f, 0.5f, 6.0f)
-
-            virtualObjectShadow.createOnGlThread(
-                this, "models/andy_shadow.obj", "models/andy_shadow.png"
-            )
-            virtualObjectShadow.setBlendMode(ObjectRenderer.BlendMode.Shadow)
-            virtualObjectShadow.setMaterialProperties(1.0f, 0.0f, 0.0f, 1.0f)
 
             openCamera()
         } catch (e: IOException) {
@@ -791,12 +618,6 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
     override fun onSurfaceChanged(gl: GL10, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
         displayRotationHelper!!.onSurfaceChanged(width, height)
-
-        runOnUiThread {
-            // Adjust layout based on display orientation.
-            imageTextLinearLayout!!.orientation =
-                if (width > height) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-        }
     }
 
     // GL draw callback. Will be called each frame on the GL thread.
@@ -813,7 +634,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         displayRotationHelper!!.updateSessionIfNeeded(sharedSession)
 
         try {
-            if (arMode && job?.isActive != true) {
+            if (job?.isActive != true) {
                 onDrawFrameARCore()
             } else {
                 onDrawFrameCamera2()
@@ -825,7 +646,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
     }
 
     // Draw frame when in non-AR mode. Called on the GL thread.
-    fun onDrawFrameCamera2() {
+    private fun onDrawFrameCamera2() {
         val texture = sharedCamera!!.surfaceTexture
 
         // ARCore may attach the SurfaceTexture to a different texture from the camera texture, so we
@@ -902,22 +723,6 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         val colorCorrectionRgba = FloatArray(4)
         frame.lightEstimate.getColorCorrection(colorCorrectionRgba, 0)
 
-        frame.acquirePointCloud().use { pointCloud ->
-            pointCloudRenderer.update(pointCloud)
-            pointCloudRenderer.draw(viewmtx, projmtx)
-        }
-        // If we detected any plane and snackbar is visible, then hide the snackbar.
-        if (messageSnackbarHelper.isShowing) {
-            for (plane in sharedSession!!.getAllTrackables(
-                Plane::class.java
-            )) {
-                if (plane.trackingState == TrackingState.TRACKING) {
-                    messageSnackbarHelper.hide(this)
-                    break
-                }
-            }
-        }
-
         // Visualize planes.
         planeRenderer.drawPlanes(
             sharedSession!!.getAllTrackables(Plane::class.java), camera.displayOrientedPose, projmtx
@@ -925,9 +730,9 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
 
         // Visualize anchors created by touch.
         val scaleFactor = 1.0f
-        for (coloredAnchor in anchors) {
+        anchor?.let { coloredAnchor ->
             if (coloredAnchor.anchor.trackingState != TrackingState.TRACKING) {
-                continue
+                return@let
             }
             // Get the current pose of an Anchor in world space. The Anchor pose is updated
             // during calls to sharedSession.update() as ARCore refines its estimate of the world.
@@ -935,9 +740,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
 
             // Update and draw the model and its shadow.
             virtualObject.updateModelMatrix(anchorMatrix, scaleFactor)
-            virtualObjectShadow.updateModelMatrix(anchorMatrix, scaleFactor)
             virtualObject.draw(viewmtx, projmtx, colorCorrectionRgba, coloredAnchor.color)
-            virtualObjectShadow.draw(viewmtx, projmtx, colorCorrectionRgba, coloredAnchor.color)
         }
     }
 
@@ -946,9 +749,8 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         val tap = tapHelper!!.poll()
         if (job?.isActive != true && tap != null && camera.trackingState == TrackingState.TRACKING) {
             job = coroutineScope.launch {
-//                withContext(Dispatchers.Main) { arcoreSwitch!!.isChecked = false }
-//                setArCoreEnabled(false)
                 delay(500)
+
                 for (hit in frame.hitTest(tap)) {
                     // Check if any plane was hit, and if it was hit inside the plane polygon
                     val trackable = hit.trackable
@@ -966,10 +768,8 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
                         // Hits are sorted by depth. Consider only closest hit on a plane or oriented point.
                         // Cap the number of objects created. This avoids overloading both the
                         // rendering system and ARCore.
-                        if (anchors.size >= 20) {
-                            anchors[0].anchor.detach()
-                            anchors.removeAt(0)
-                        }
+                        anchor?.anchor?.detach()
+                        anchor = null
 
                         // Assign a color to the object for rendering based on the trackable type
                         // this anchor attached to. For AR_TRACKABLE_POINT, it's blue color, and
@@ -985,7 +785,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
                         // Adding an Anchor tells ARCore that it should track this position in
                         // space. This anchor is created on the Plane to place the 3D model
                         // in the correct position relative both to the world and to the plane.
-                        anchors.add(ColoredAnchor(hit.createAnchor(), objColor))
+                        anchor = ColoredAnchor(hit.createAnchor(), objColor)
                         break
                     }
                 }
@@ -1049,9 +849,5 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         private val TAG: String = SharedCameraActivity::class.java.simpleName
 
         private val DEFAULT_COLOR = floatArrayOf(0f, 0f, 0f, 0f)
-
-        // Required for test run.
-        private const val AUTOMATOR_DEFAULT: Short = 0
-        private const val AUTOMATOR_KEY = "automator"
     }
 }
