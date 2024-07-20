@@ -68,7 +68,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import org.opencv.android.OpenCVLoader
@@ -99,6 +102,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
     private val augmentedImageRenderer = AugmentedImageRenderer()
 
     private var detectedObjectAnchor: DetectedObjectAnchor? = null
+    private var job: Job? = null
+    private val coroutineScope = MainScope()
 
     // Whether the app has just entered non-AR mode.
     private val isFirstFrameWithoutArcore = AtomicBoolean(true)
@@ -297,23 +302,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
             return
         }
 
-        // Notify ARCore session that the view size changed so that the perspective matrix and
-        // the video background can be properly adjusted.
-        displayRotationHelper!!.updateSessionIfNeeded(session)
-
-        try {
-            if (true) { // TODO
-                onDrawFrameARCore()
-            } else {
-                onDrawFrameCamera2()
-            }
-        } catch (t: Throwable) {
-            // Avoid crashing the application due to unhandled exceptions.
-            Log.e(TAG, "Exception on the OpenGL thread", t)
-        }
-    }
-
-    private fun onDrawFrameARCore() {
         if (session == null) {
             return
         }
@@ -323,6 +311,25 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
             return
         }
 
+        // Notify ARCore session that the view size changed so that the perspective matrix and
+        // the video background can be properly adjusted.
+        displayRotationHelper!!.updateSessionIfNeeded(session)
+
+        try {
+            if (job?.isActive != true) {
+                Log.d("carloss", "onDrawFrameARCore")
+                onDrawFrameARCore()
+            } else {
+                Log.d("carloss", "onDrawFrameCamera2")
+                onDrawFrameCamera2()
+            }
+        } catch (t: Throwable) {
+            // Avoid crashing the application due to unhandled exceptions.
+            Log.e(TAG, "Exception on the OpenGL thread", t)
+        }
+    }
+
+    private fun onDrawFrameARCore() {
         // Obtain the current frame from ARSession. When the configuration is set to
         // UpdateMode.BLOCKING (it is by default), this will throttle the rendering to the
         // camera framerate.
@@ -354,10 +361,10 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
     private fun configureSession() {
         val config = Config(session)
         config.setFocusMode(Config.FocusMode.AUTO)
-        config.setDepthMode(Config.DepthMode.AUTOMATIC)
+//        config.setDepthMode(Config.DepthMode.AUTOMATIC)
         config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL)
-        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
-        config.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE)
+//        config.setInstantPlacementMode(Config.InstantPlacementMode.LOCAL_Y_UP)
+        config.setUpdateMode(Config.UpdateMode.BLOCKING)
         session!!.configure(config)
     }
 
@@ -377,13 +384,21 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
         }
 
         if (detectedObjectAnchor == null && frame.camera.trackingState == TrackingState.TRACKING) {
-            Log.d("carloss", "no existing anchor && no lock")
+            job = coroutineScope.launch {
+                Log.d("carloss", "no existing anchor && no lock")
 
-            frame.tryAcquireCameraImage()?.let { image ->
-                val convertYuv = objectDetector.convertYuv(image)
-                image.close()
+                frame.tryAcquireCameraImage()?.let { image ->
+                    val convertYuv = objectDetector.convertYuv(image)
+                    image.close()
 
-                    runBlocking {
+                    val screenCenterPoint = Point(convertYuv.width / 2, convertYuv.height / 2)
+                    createAnchor(
+                        screenCenterPoint.x.toFloat(),
+                        screenCenterPoint.y.toFloat(),
+                        frame,
+                        frame.camera
+                    )?.let { centerAnchor ->
+                        val plane = centerAnchor.trackable as Plane
                         // Check if the current view has a document
                         objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
                             Log.d("carlos", "found 4 corners $cornerPoints")
@@ -393,43 +408,64 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                 cornerPoints[1] to cornerPoints[3]
                             )
 
-                            if (cornerPoints.isInside(centerPoint.x.toFloat(), centerPoint.y.toFloat())) {
-                                DetectedObject(cornerPoints = cornerPoints, centerPoint = centerPoint)
+                            if (cornerPoints.isInside(
+                                    centerPoint.x.toFloat(),
+                                    centerPoint.y.toFloat()
+                                )
+                            ) {
+                                DetectedObject(
+                                    cornerPoints = cornerPoints,
+                                    centerPoint = centerPoint,
+                                    plane = plane
+                                )
                             } else {
                                 null
                             }
                         }
                     }
-            }?.let {
-                Log.d("carlos", "looking for anchor")
-                createAnchor(it.centerPoint.x.toFloat(), it.centerPoint.y.toFloat(), frame, frame.camera)?.let { centerAnchor ->
+                }?.let {
+                    Log.d("carlos", "looking for anchor")
+                    createAnchor(
+                        it.centerPoint.x.toFloat(),
+                        it.centerPoint.y.toFloat(),
+                        frame,
+                        it.plane
+                    )?.let { centerAnchor ->
 //                createAnchor(it.center, frame, frame.camera)?.let { centerAnchor ->
-                    val anchor = centerAnchor.createAnchor()
-                    val anchorPose = anchor.pose
-                    val plane = (centerAnchor.trackable as Plane)
+                        val anchor = centerAnchor.createAnchor()
+                        val anchorPose = anchor.pose
 
-                    Log.d("carlos", "found anchor $anchorPose plane=${plane.centerPose}")
+                        Log.d("carlos", "found anchor $anchorPose plane=${it.plane.centerPose}")
 
-                    Log.d("carlos", "camera (${frame.camera.pose.tx()}, ${frame.camera.pose.ty()}, ${frame.camera.pose.tz()})")
+                        Log.d(
+                            "carlos",
+                            "camera (${frame.camera.pose.tx()}, ${frame.camera.pose.ty()}, ${frame.camera.pose.tz()})"
+                        )
 
-                    val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
-                        createAnchor(corner.x.toFloat(), corner.y.toFloat(), frame, plane)?.hitPose?.let { pose ->
-                            Log.d("carlos", "corner $index anchor=${pose}")
-                            plane.createAnchor(
-                                pose
+                        val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
+                            createAnchor(
+                                corner.x.toFloat(),
+                                corner.y.toFloat(),
+                                frame,
+                                it.plane
+                            )?.hitPose?.let { pose ->
+                                Log.d("carlos", "corner $index anchor=${pose}")
+                                it.plane.createAnchor(
+                                    pose
+                                )
+                            }
+                        }.filterNotNull()
+
+
+                        if (cornerAnchors.size == 4) {
+                            detectedObjectAnchor = DetectedObjectAnchor(
+                                anchor = anchor,
+                                cornerAnchors = cornerAnchors
                             )
                         }
-                    }.filterNotNull()
-
-
-                    if (cornerAnchors.size == 4) {
-                        detectedObjectAnchor = DetectedObjectAnchor(
-                            anchor = anchor,
-                            cornerAnchors = cornerAnchors
-                        )
+                    } ?: run {
+                        Log.d("carlos", "no anchor")
                     }
-                } ?: run {
-                    Log.d("carlos", "no anchor")
                 }
             }
         }
@@ -511,7 +547,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
 
     private fun pauseARCore() {
         // Pause ARCore.
-        session!!.pause()
+        session?.pause()
         isFirstFrameWithoutArcore.set(true)
     }
 
@@ -835,4 +871,5 @@ data class DetectedObjectAnchor(
 data class DetectedObject(
     val cornerPoints: List<Point>,
     val centerPoint: Point,
+    val plane: Plane,
 )
