@@ -47,6 +47,7 @@ import com.google.ar.core.ArCoreApk.InstallStatus
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
+import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.SharedCamera
 import com.google.ar.core.TrackingState
@@ -392,6 +393,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                     image.close()
 
                     val screenCenterPoint = Point(convertYuv.width / 2, convertYuv.height / 2)
+                    Log.d("carlos", "looking for anchor")
                     createAnchor(
                         screenCenterPoint.x.toFloat(),
                         screenCenterPoint.y.toFloat(),
@@ -399,6 +401,8 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                         frame.camera
                     )?.let { centerAnchor ->
                         val plane = centerAnchor.trackable as Plane
+                        Log.d("carlos", "found anchor ${centerAnchor.hitPose}")
+
                         // Check if the current view has a document
                         objectDetector.analyze(convertYuv, imageRotation)?.let { cornerPoints ->
                             Log.d("carlos", "found 4 corners $cornerPoints")
@@ -422,50 +426,47 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                 null
                             }
                         }
-                    }
-                }?.let {
-                    Log.d("carlos", "looking for anchor")
-                    createAnchor(
-                        it.centerPoint.x.toFloat(),
-                        it.centerPoint.y.toFloat(),
-                        frame,
-                        it.plane
-                    )?.let { centerAnchor ->
-//                createAnchor(it.center, frame, frame.camera)?.let { centerAnchor ->
-                        val anchor = centerAnchor.createAnchor()
-                        val anchorPose = anchor.pose
+                    }?.let {
+                        createAnchor(
+                            it.centerPoint.x.toFloat(),
+                            it.centerPoint.y.toFloat(),
+                            frame,
+                            it.plane
+                        )?.let { centerAnchor ->
+                            val anchor = centerAnchor.createAnchor()
 
-                        Log.d("carlos", "found anchor $anchorPose plane=${it.plane.centerPose}")
+                            Log.d(
+                                "carlos",
+                                "camera (${frame.camera.pose.tx()}, ${frame.camera.pose.ty()}, ${frame.camera.pose.tz()})"
+                            )
 
-                        Log.d(
-                            "carlos",
-                            "camera (${frame.camera.pose.tx()}, ${frame.camera.pose.ty()}, ${frame.camera.pose.tz()})"
-                        )
+                            val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
+                                createAnchor(
+                                    corner.x.toFloat(),
+                                    corner.y.toFloat(),
+                                    frame,
+                                    it.plane
+                                )?.hitPose?.let { pose ->
+                                    Log.d("carlos", "corner $index anchor=${pose}")
+                                    val rotation = pose.rotationQuaternion
+                                    it.plane.createAnchor(
+                                        pose.compose(
+                                            Pose.makeRotation(0f, -rotation[1], 0f, rotation[3])
+                                        )
+                                    )
+                                }
+                            }.filterNotNull()
 
-                        val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
-                            createAnchor(
-                                corner.x.toFloat(),
-                                corner.y.toFloat(),
-                                frame,
-                                it.plane
-                            )?.hitPose?.let { pose ->
-                                Log.d("carlos", "corner $index anchor=${pose}")
-                                it.plane.createAnchor(
-                                    pose
+                            if (cornerAnchors.size == 4) {
+                                detectedObjectAnchor = DetectedObjectAnchor(
+                                    anchor = anchor,
+                                    cornerAnchors = cornerAnchors
                                 )
                             }
-                        }.filterNotNull()
-
-
-                        if (cornerAnchors.size == 4) {
-                            detectedObjectAnchor = DetectedObjectAnchor(
-                                anchor = anchor,
-                                cornerAnchors = cornerAnchors
-                            )
                         }
-                    } ?: run {
-                        Log.d("carlos", "no anchor")
                     }
+                } ?: run {
+                    Log.d("carlos", "no anchor")
                 }
             }
         }
