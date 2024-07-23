@@ -16,6 +16,9 @@ import com.google.ar.core.exceptions.NotYetAvailableException
 import java.nio.ByteOrder
 import javax.vecmath.Vector2f
 import javax.vecmath.Vector3f
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan
 
 /** Temporary arrays to prevent allocations in [createAnchor]. */
 private val convertFloats = FloatArray(4)
@@ -55,6 +58,19 @@ fun createAnchor(xImage: Float, yImage: Float, frame: Frame, camera: Camera): Hi
 
 //    val result = hits.getOrNull(0) ?: return null
     return result
+}
+
+fun Point.toViewCoordinates(frame: Frame): Point {
+    convertFloats[0] = x.toFloat()
+    convertFloats[1] = y.toFloat()
+    frame.transformCoordinates2d(
+        Coordinates2d.IMAGE_PIXELS,
+        convertFloats,
+        Coordinates2d.VIEW,
+        convertFloatsOut
+    )
+
+    return Point(convertFloatsOut[0].toInt(), convertFloatsOut[1].toInt())
 }
 
 fun createAnchor(xImage: Float, yImage: Float, frame: Frame, trackable: Trackable): HitResult? {
@@ -236,3 +252,12 @@ fun Frame.tryAcquireDepthImage() =
     } catch (e: Throwable) {
         throw e
     }
+
+fun calculateAngle(p0: Point, p1: Point): Float {
+    return calculateAngle(p0.x.toFloat(), p0.y.toFloat(), p1.x.toFloat(), p1.y.toFloat())
+}
+
+fun calculateAngle(x0: Float, y0: Float, x1: Float, y1: Float): Float {
+    val angle = atan((y1 - y0) / abs(x1 - x0)) * (180f / PI.toFloat())
+    return if (angle < 0) 360 + angle else angle
+}

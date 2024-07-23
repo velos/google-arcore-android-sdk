@@ -19,6 +19,7 @@ import android.content.Context
 import android.util.Log
 import com.google.ar.core.Anchor
 import com.google.ar.core.Pose
+import com.google.ar.core.examples.java.augmentedimage.calculateAngle
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import java.io.IOException
 
@@ -61,6 +62,7 @@ class AugmentedImageRenderer {
         projectionMatrix: FloatArray,
         centerAnchor: Anchor,
         cornerAnchors: List<Anchor>,
+        angles: List<Float>,
         colorCorrectionRgba: FloatArray,
     ) {
         Log.d(TAG, "drawing $centerAnchor")
@@ -77,7 +79,10 @@ class AugmentedImageRenderer {
 
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
-            worldBoundaryPoses[i] = cornerAnchors[i].pose
+            worldBoundaryPoses[i] =
+                cornerAnchors[i].pose
+                    .extractTranslation()
+                    .compose(Pose.makeRotation(0f, 1f, 0f, angles[i]))
         }
 
         worldBoundaryPoses[0]!!.toMatrix(modelMatrix, 0)
@@ -95,17 +100,16 @@ class AugmentedImageRenderer {
         worldBoundaryPoses[3]!!.toMatrix(modelMatrix, 0)
         imageFrameLowerLeft.updateModelMatrix(modelMatrix, scaleFactor)
         imageFrameLowerLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
-
     }
 
     companion object {
         private const val TAG = "AugmentedImageRenderer"
 
-        private const val TINT_INTENSITY = 0.1f
+        private const val TINT_INTENSITY = 1.0f
         private const val TINT_ALPHA = 1.0f
         private val TINT_COLORS_HEX = intArrayOf(
             0x000000,
-            0xF44336,
+            0xFF0000,
             0xE91E63,
             0x9C27B0,
             0x673AB7,
