@@ -258,6 +258,7 @@ fun calculateAngle(p0: Point, p1: Point): Float {
 }
 
 fun calculateAngle(x0: Float, y0: Float, x1: Float, y1: Float): Float {
-    val angle = atan((y1 - y0) / abs(x1 - x0)) * (180f / PI.toFloat())
-    return if (angle < 0) 360 + angle else angle
+    val angle = atan((y1 - y0) / abs(x1 - x0)) //* (180f / PI.toFloat())
+//    return if (angle < 0) 360 + angle else angle
+    return angle
 }

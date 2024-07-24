@@ -22,6 +22,8 @@ import com.google.ar.core.Pose
 import com.google.ar.core.examples.java.augmentedimage.calculateAngle
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import java.io.IOException
+import kotlin.math.cos
+import kotlin.math.sin
 
 /** Renders an augmented image.  */
 class AugmentedImageRenderer {
@@ -62,7 +64,6 @@ class AugmentedImageRenderer {
         projectionMatrix: FloatArray,
         centerAnchor: Anchor,
         cornerAnchors: List<Anchor>,
-        angles: List<Float>,
         colorCorrectionRgba: FloatArray,
     ) {
         Log.d(TAG, "drawing $centerAnchor")
@@ -77,12 +78,26 @@ class AugmentedImageRenderer {
         imageFrameUpperLeft.updateModelMatrix(modelMatrix, scaleFactor)
         imageFrameUpperLeft.draw(viewMatrix, projectionMatrix, colorCorrectionRgba, tintColor)
 
+        val angles = listOf(
+            -calculateAngle(cornerAnchors[0].pose.tx(), cornerAnchors[0].pose.tz(), cornerAnchors[1].pose.tx(), cornerAnchors[1].pose.tz()),
+            calculateAngle(cornerAnchors[1].pose.tx(), cornerAnchors[1].pose.tz(), cornerAnchors[0].pose.tx(), cornerAnchors[0].pose.tz()),
+            calculateAngle(cornerAnchors[2].pose.tx(), cornerAnchors[2].pose.tz(), cornerAnchors[3].pose.tx(), cornerAnchors[3].pose.tz()),
+            -calculateAngle(cornerAnchors[3].pose.tx(), cornerAnchors[3].pose.tz(), cornerAnchors[2].pose.tx(), cornerAnchors[2].pose.tz()),
+        )
+
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
             worldBoundaryPoses[i] =
                 cornerAnchors[i].pose
                     .extractTranslation()
-                    .compose(Pose.makeRotation(0f, 1f, 0f, angles[i]))
+                    .compose(
+                        Pose.makeRotation(
+                            0f,
+                            sin(angles[i]/2),
+                            0f,
+                            cos(angles[i]/2)
+                        )
+                    )
         }
 
         worldBoundaryPoses[0]!!.toMatrix(modelMatrix, 0)

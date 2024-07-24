@@ -440,13 +440,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                 "camera ${frame.camera.pose})"
                             )
 
-                            val angles = listOf(
-                                calculateAngle(it.cornerPoints[0], it.cornerPoints[1]),
-                                calculateAngle(it.cornerPoints[1], it.cornerPoints[0]),
-                                calculateAngle(it.cornerPoints[2], it.cornerPoints[3]),
-                                calculateAngle(it.cornerPoints[3], it.cornerPoints[2]),
-                            )
-
                             val t = 0.0127f // 0.5"
                             val translations = listOf(
                                 floatArrayOf(-t, -t),
@@ -462,11 +455,11 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                     frame,
                                     it.plane
                                 )?.hitPose?.let { pose ->
-                                    Log.d("carlos", "corner $index anchor=${pose} angle=${angles[index]}")
+                                    Log.d("carlos", "corner $index anchor=${pose}")
 
                                     it.plane.createAnchor(
                                         pose
-//                                            .compose(Pose.makeTranslation(translations[index][0], 0f, translations[index][1]))
+                                            .compose(Pose.makeTranslation(translations[index][0], 0f, translations[index][1]))
                                     )
                                 }
                             }.filterNotNull()
@@ -475,7 +468,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                 detectedObjectAnchor = DetectedObjectAnchor(
                                     anchor = anchor,
                                     cornerAnchors = cornerAnchors,
-                                    angles = angles
                                 )
                             }
                         }
@@ -492,7 +484,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
             Log.d("carloss", "drawing anchor")
 
             augmentedImageRenderer.draw(
-                viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.cornerAnchors, detectedObjectAnchor.angles, colorCorrectionRgba
+                viewmtx, projmtx, detectedObjectAnchor.anchor, detectedObjectAnchor.cornerAnchors, colorCorrectionRgba
             )
         }
     }
@@ -877,7 +869,6 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
 data class DetectedObjectAnchor(
     val anchor: Anchor,
     val cornerAnchors: List<Anchor>,
-    val angles: List<Float>
 ) {
     fun detach() {
         anchor.detach()
