@@ -372,12 +372,12 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
     private fun drawAugmentedImages(
         frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, colorCorrectionRgba: FloatArray
     ) {
-        val cameraId = session!!.cameraConfig.cameraId
+//        val cameraId = session!!.cameraConfig.cameraId
         val imageRotation = 0 // displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
 //            Log.d("carlos", "detecting objects...")
 
         detectedObjectAnchor?.let { anchors ->
-            if (anchors.anchor.trackingState != TrackingState.TRACKING) {
+            if (!anchors.isTracking()) {
                 Log.d("carlos", "lost tracking $anchors, removing anchor")
                 anchors.detach()
                 detectedObjectAnchor = null
@@ -460,8 +460,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                     frame,
                                     it.plane
                                 )?.hitPose?.let { pose ->
-                                    Log.d("carlos", "corner $index anchor=${pose}")
-
+                                    Log.d("carlos", "corner $index $pose")
                                     it.plane.createAnchor(
                                         pose
 //                                            .compose(Pose.makeTranslation(translations[index][0], 0f, translations[index][1]))
@@ -470,10 +469,25 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                             }.filterNotNull()
 
                             if (cornerAnchors.size == 4) {
-                                detectedObjectAnchor = DetectedObjectAnchor(
-                                    anchor = anchor,
-                                    cornerAnchors = cornerAnchors,
-                                )
+                                val topWidth = cornerAnchors[1].pose.tx() - cornerAnchors[0].pose.tx()
+                                val bottomWidth = cornerAnchors[2].pose.tx() - cornerAnchors[3].pose.tx()
+                                val leftHeight = cornerAnchors[3].pose.tz() - cornerAnchors[0].pose.tz()
+                                val rightHeight = cornerAnchors[2].pose.tz() - cornerAnchors[1].pose.tz()
+                                val minWidth = 0.1778f // 7"
+                                val minHeight = 0.2286f // 9"
+                                Log.d("carlos", "dimensions: ${mToIn(topWidth)} ${mToIn(bottomWidth)} ${mToIn(leftHeight)} ${mToIn(rightHeight)}")
+
+                                if (
+                                    (topWidth > minWidth || bottomWidth > minWidth)
+                                    && (leftHeight > minHeight || rightHeight > minHeight)
+                                ) {
+                                    detectedObjectAnchor = DetectedObjectAnchor(
+                                        anchor = anchor,
+                                        cornerAnchors = cornerAnchors,
+                                    )
+                                } else {
+                                    Log.d("carlos", "document too small")
+                                }
                             }
                         }
                     }
@@ -878,6 +892,10 @@ data class DetectedObjectAnchor(
     fun detach() {
         anchor.detach()
         cornerAnchors.forEach { it.detach() }
+    }
+
+    fun isTracking(): Boolean {
+        return anchor.trackingState == TrackingState.TRACKING && cornerAnchors.all { it.trackingState == TrackingState.TRACKING }
     }
 }
 

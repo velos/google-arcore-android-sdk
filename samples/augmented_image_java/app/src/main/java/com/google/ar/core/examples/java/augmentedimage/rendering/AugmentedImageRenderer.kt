@@ -20,7 +20,6 @@ import android.util.Log
 import com.google.ar.core.Anchor
 import com.google.ar.core.Pose
 import com.google.ar.core.examples.java.augmentedimage.calculateAngle
-import com.google.ar.core.examples.java.augmentedimage.deg2rad
 import com.google.ar.core.examples.java.common.rendering.ObjectRenderer
 import java.io.IOException
 import kotlin.math.cos
@@ -88,7 +87,7 @@ class AugmentedImageRenderer {
 
         val worldBoundaryPoses = arrayOfNulls<Pose>(4)
         for (i in 0..3) {
-            Log.d("carlos", "corner $i angle ${angles[i]}")
+            Log.d("carloss", "corner $i angle ${angles[i]}")
             worldBoundaryPoses[i] =
                 cornerAnchors[i].pose
                     .extractTranslation()

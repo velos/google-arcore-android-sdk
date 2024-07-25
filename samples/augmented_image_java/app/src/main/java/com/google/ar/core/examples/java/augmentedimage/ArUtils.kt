@@ -264,3 +264,4 @@ fun calculateAngle(x0: Float, y0: Float, x1: Float, y1: Float): Float {
 }
 
 fun deg2rad(deg: Float): Float = deg * (PI.toFloat() / 180f)
+fun mToIn(m: Float): Float = m * 39.37008f
