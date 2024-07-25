@@ -262,3 +262,5 @@ fun calculateAngle(x0: Float, y0: Float, x1: Float, y1: Float): Float {
 //    return if (angle < 0) 360 + angle else angle
     return angle
 }
+
+fun deg2rad(deg: Float): Float = deg * (PI.toFloat() / 180f)

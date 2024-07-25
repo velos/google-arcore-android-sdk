@@ -62,6 +62,7 @@ class OpenCvObjectDetector(context: Activity) {
     suspend fun analyze(convertYuv: Bitmap, imageRotation: Int): List<Point>? {
         // The model performs best on upright images, so rotate it.
         val rotatedImage = ImageUtils.rotateBitmap(convertYuv, imageRotation)
+        Log.d("carlos", "rotatedImage ${rotatedImage.width} x ${rotatedImage.height}")
 
         val segmentationResult = withContext(Dispatchers.IO) {
             runCatching {
@@ -92,22 +93,26 @@ class OpenCvObjectDetector(context: Activity) {
             edgeMask,
             rotatedImage.width,
             rotatedImage.height
-        ).map {
-            it.rotateCoordinates(rotatedImage.width, rotatedImage.height, imageRotation)
-        }
+        )
 
 //        contourPoints.forEachIndexed { index, point ->
 //            Log.d("carloss", "contourPoint $index: (${point.x}, ${point.y})")
 //        }
 
         if (contourPoints.size == 4) {
-            val orderedPoints = contourPoints.ordered()
+            val orderedPoints = contourPoints.ordered().map {
+                Log.d("carlos", "contourPoints ${it}")
+                it.rotateCoordinates(rotatedImage.width, rotatedImage.height, imageRotation).also {
+                    Log.d("carlos", "rotated contourPoints ${it}")
+                }
+            }
 //            val extentX = abs(orderedPoints[0].x - orderedPoints[2].x)
 //            val extentY = abs(orderedPoints[0].y - orderedPoints[2].y)
 //            val center = floatArrayOf(
 //                orderedPoints[0].x + extentX / 2f,
 //                orderedPoints[0].y + extentY / 2f
 //            )
+            Log.d("carlos", "orderedPoints ${orderedPoints}")
 
             return orderedPoints
         } else {

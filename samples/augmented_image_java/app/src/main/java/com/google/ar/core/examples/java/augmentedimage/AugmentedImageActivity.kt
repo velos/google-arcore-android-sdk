@@ -373,7 +373,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
         frame: Frame, projmtx: FloatArray, viewmtx: FloatArray, colorCorrectionRgba: FloatArray
     ) {
         val cameraId = session!!.cameraConfig.cameraId
-        val imageRotation = displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
+        val imageRotation = 0 // displayRotationHelper!!.getCameraSensorToDisplayRotation(cameraId)
 //            Log.d("carlos", "detecting objects...")
 
         detectedObjectAnchor?.let { anchors ->
@@ -393,7 +393,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                     image.close()
 
                     val screenCenterPoint = Point(convertYuv.width / 2, convertYuv.height / 2)
-                    Log.d("carlos", "looking for anchor")
+                    Log.d("carlos", "looking for anchor ${convertYuv.width} x ${convertYuv.height} $imageRotation")
                     createAnchor(
                         screenCenterPoint.x.toFloat(),
                         screenCenterPoint.y.toFloat(),
@@ -418,7 +418,12 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                 )
                             ) {
                                 DetectedObject(
-                                    cornerPoints = cornerPoints,
+                                    cornerPoints = listOf( // Reorder for portrait
+                                        cornerPoints[3],
+                                        cornerPoints[0],
+                                        cornerPoints[1],
+                                        cornerPoints[2]
+                                    ),
                                     centerPoint = centerPoint,
                                     plane = plane
                                 )
@@ -443,9 +448,9 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                             val t = 0.0127f // 0.5"
                             val translations = listOf(
                                 floatArrayOf(-t, -t),
-                                floatArrayOf(t, -t),
-                                floatArrayOf(t, t),
                                 floatArrayOf(-t, t),
+                                floatArrayOf(t, t),
+                                floatArrayOf(t, -t),
                             )
 
                             val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
@@ -459,7 +464,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
 
                                     it.plane.createAnchor(
                                         pose
-                                            .compose(Pose.makeTranslation(translations[index][0], 0f, translations[index][1]))
+//                                            .compose(Pose.makeTranslation(translations[index][0], 0f, translations[index][1]))
                                     )
                                 }
                             }.filterNotNull()
