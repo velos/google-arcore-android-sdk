@@ -447,10 +447,10 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
 
                             val t = 0.0127f // 0.5"
                             val translations = listOf(
-                                floatArrayOf(-t, -t),
-                                floatArrayOf(-t, t),
-                                floatArrayOf(t, t),
-                                floatArrayOf(t, -t),
+                                floatArrayOf(-t, 0f, -t),
+                                floatArrayOf(t, 0f, -t),
+                                floatArrayOf(t, 0f, t),
+                                floatArrayOf(-t, 0f, t),
                             )
 
                             val cornerAnchors = it.cornerPoints.mapIndexed { index, corner ->
@@ -463,7 +463,7 @@ class AugmentedImageActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnIm
                                     Log.d("carlos", "corner $index $pose")
                                     it.plane.createAnchor(
                                         pose
-//                                            .compose(Pose.makeTranslation(translations[index][0], 0f, translations[index][1]))
+                                            .compose(Pose.makeTranslation(translations[index]))
                                     )
                                 }
                             }.filterNotNull()
