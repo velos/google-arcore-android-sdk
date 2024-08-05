@@ -21,6 +21,7 @@ import android.graphics.SurfaceTexture.OnFrameAvailableListener
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCaptureSession.CaptureCallback
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
@@ -484,6 +485,29 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         }
     }
 
+    private var captureImageReader: ImageReader? = null
+    private fun initializeCaptureImageReader() {
+        // Initialize an image reader which will be used to capture still photos
+        // TODO I also tried setting `ImageFormat.YUV_420_888` here, to match the same format as cpuImageReader, but it crashes when I use that here and I dont know why.
+        val pixelFormat = ImageFormat.JPEG
+
+//        val size = characteristics
+//            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+//            .getOutputSizes(pixelFormat)
+//            .maxByOrNull { it.height * it.width }!!
+
+        // TODO I'm using the preview surface dimensions to make sure that setting a custom higher resolution for the captureImageReader isn't causing my problems.
+        val size = sharedSession!!.cameraConfig.textureSize
+        Log.d(TAG, "configuring captureImageReader ${size.width} x ${size.height}")
+
+        captureImageReader = ImageReader.newInstance(
+            size.width,
+            size.height,
+            pixelFormat,
+            1
+        )
+    }
+
     private fun createCameraPreviewSession() {
         try {
             sharedSession!!.setCameraTextureName(backgroundRenderer.textureId)
@@ -506,6 +530,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             // 2. cpuImageReader.getSurface()
 
             // Add ARCore surfaces and CPU image surface targets.
+            // TODO I intentionally am not adding captureImageReader to previewCaptureRequestBuilder since it should not be needed for the preview. I still have the problem even if I add it here.
             for (surface in surfaceList) {
                 previewCaptureRequestBuilder!!.addTarget(surface)
             }
@@ -518,9 +543,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 )
 
             // Create camera capture session for camera preview using ARCore wrapped callback.
-            cameraDevice!!.createCaptureSession(surfaceList, wrappedCallback, backgroundHandler)
+            cameraDevice!!.createCaptureSession(surfaceList + captureImageReader!!.surface, wrappedCallback, backgroundHandler)
         } catch (e: CameraAccessException) {
-            Log.e(TAG, "CameraAccessException", e)
+            Log.e(TAG, "CameraAccessException ${e.reason}", e)
         }
     }
 
@@ -581,6 +606,11 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             // Enable auto focus mode while ARCore is running.
             val config = sharedSession!!.config
             config.setFocusMode(Config.FocusMode.AUTO)
+
+            // TODO These are set in the document scanner POC, but don't seem to make a difference here.
+//            config.setUpdateMode(Config.UpdateMode.BLOCKING)
+//            config.setPlaneFindingMode(Config.PlaneFindingMode.HORIZONTAL)
+
             sharedSession!!.configure(config)
         }
 
@@ -601,7 +631,11 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             )
         cpuImageReader!!.setOnImageAvailableListener(this, backgroundHandler)
 
+        // TODO Creates the captureImageReader, but it should never get 'activated' since I am never actually creating a capture request with it.
+        initializeCaptureImageReader()
+
         // When ARCore is running, make sure it also updates our CPU image surface.
+        // TODO I tried adding captureImageReader here too, but AR just shows a blank screen if I do that.
         sharedCamera!!.setAppSurfaces(
             this.cameraId, listOf(
                 cpuImageReader!!.surface
@@ -704,7 +738,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
     // Surface texture on frame available callback, used only in non-AR mode.
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
-        // Log.d(TAG, "onFrameAvailable()");
+         Log.d(TAG, "onFrameAvailable()");
     }
 
     // CPU image reader callback.
@@ -814,8 +848,10 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
 
         try {
             if (arMode && job?.isActive != true) {
+                Log.d(TAG, "onDrawFrameARCore")
                 onDrawFrameARCore()
             } else {
+                Log.d(TAG, "onDrawFrameCamera2")
                 onDrawFrameCamera2()
             }
         } catch (t: Throwable) {
@@ -826,6 +862,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
 
     // Draw frame when in non-AR mode. Called on the GL thread.
     fun onDrawFrameCamera2() {
+        // TODO This gets called while handleTap()'s coroutine is still running. Even though it still gets called, it seems surfaceTexture is no longer being updated.
         val texture = sharedCamera!!.surfaceTexture
 
         // ARCore may attach the SurfaceTexture to a different texture from the camera texture, so we
@@ -946,9 +983,21 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         val tap = tapHelper!!.poll()
         if (job?.isActive != true && tap != null && camera.trackingState == TrackingState.TRACKING) {
             job = coroutineScope.launch {
-//                withContext(Dispatchers.Main) { arcoreSwitch!!.isChecked = false }
-//                setArCoreEnabled(false)
-                delay(500)
+                // TODO This is not needed in this sample, but is used in the document scanner POC. Calling this here in addition to setting the captureImagerReader on the camera session causes the hung preview.
+                val image = runCatching { frame.acquireCameraImage() }
+                    .onFailure { Log.e(TAG, "acquireCameraImage", it) }
+                    .getOrNull()
+                Log.d(TAG, "handleTap: $image")
+                image?.close()
+
+                // TODO Setting this causes the preview texture to re-attach in onDrawFrameCamera2() and kind of fixes the problem. But when this job completes & onDrawFrameARCore() resumes, ARCore's frames become blank.
+//                isFirstFrameWithoutArcore.set(true)
+
+                // TODO simulate a 1s synchronous call to show the hung camera preview
+                runBlocking {
+                    delay(1000)
+                }
+
                 for (hit in frame.hitTest(tap)) {
                     // Check if any plane was hit, and if it was hit inside the plane polygon
                     val trackable = hit.trackable
