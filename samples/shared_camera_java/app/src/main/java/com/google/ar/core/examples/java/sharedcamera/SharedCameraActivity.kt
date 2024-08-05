@@ -27,6 +27,9 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR
 import android.media.ImageReader
 import android.media.ImageReader.OnImageAvailableListener
 import android.opengl.GLES20
@@ -78,6 +81,7 @@ import javax.microedition.khronos.opengles.GL10
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -491,6 +495,7 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
         // TODO I also tried setting `ImageFormat.YUV_420_888` here, to match the same format as cpuImageReader, but it crashes when I use that here and I dont know why.
         val pixelFormat = ImageFormat.JPEG
 
+        val characteristics = cameraManager!!.getCameraCharacteristics(sharedSession!!.cameraConfig.cameraId)
 //        val size = characteristics
 //            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
 //            .getOutputSizes(pixelFormat)
@@ -543,7 +548,22 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
                 )
 
             // Create camera capture session for camera preview using ARCore wrapped callback.
-            cameraDevice!!.createCaptureSession(surfaceList + captureImageReader!!.surface, wrappedCallback, backgroundHandler)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                cameraDevice!!.createCaptureSession(
+                    SessionConfiguration(
+                        SESSION_REGULAR,
+                        (surfaceList + captureImageReader!!.surface).map { OutputConfiguration(it) },
+                        Dispatchers.IO.asExecutor(),
+                        wrappedCallback
+                    )
+                )
+            } else {
+                cameraDevice!!.createCaptureSession(
+                    surfaceList + captureImageReader!!.surface,
+                    wrappedCallback,
+                    backgroundHandler
+                )
+            }
         } catch (e: CameraAccessException) {
             Log.e(TAG, "CameraAccessException ${e.reason}", e)
         }
@@ -614,6 +634,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             sharedSession!!.configure(config)
         }
 
+        // Store a reference to the camera system service.
+        cameraManager = this.getSystemService(CAMERA_SERVICE) as CameraManager
+
         // Store the ARCore shared camera reference.
         sharedCamera = sharedSession!!.sharedCamera
 
@@ -647,9 +670,6 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
 
             val wrappedCallback =
                 sharedCamera!!.createARDeviceStateCallback(cameraDeviceCallback, backgroundHandler)
-
-            // Store a reference to the camera system service.
-            cameraManager = this.getSystemService(CAMERA_SERVICE) as CameraManager
 
             // Get the characteristics for the ARCore camera.
             val characteristics = cameraManager!!.getCameraCharacteristics(this.cameraId!!)
