@@ -492,8 +492,15 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     private var captureImageReader: ImageReader? = null
     private fun initializeCaptureImageReader() {
         // Initialize an image reader which will be used to capture still photos
-        // TODO I also tried setting `ImageFormat.YUV_420_888` here, to match the same format as cpuImageReader, but it crashes when I use that here and I dont know why.
-        val pixelFormat = ImageFormat.JPEG
+        // TODO If I set this to JPEG:
+        //  Pixel 4a: everything works (no hanging)
+        //  Samsung S10e: works but hangs during coroutine
+        //  Pixel 8: Crash
+        // TODO If I set this to YUV_420_888:
+        //  Pixel 4a: ANR
+        //  Samsung S10e: Crash
+        //  Pixel 8: everything works (no hanging)
+        val pixelFormat = ImageFormat.YUV_420_888
 
         val characteristics = cameraManager!!.getCameraCharacteristics(sharedSession!!.cameraConfig.cameraId)
 //        val size = characteristics
