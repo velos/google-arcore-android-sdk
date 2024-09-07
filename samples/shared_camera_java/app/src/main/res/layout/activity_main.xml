@@ -56,6 +56,7 @@
         android:layout_marginStart="12dp"
         android:layout_marginTop="22dp"
         android:switchPadding="8dp"
+        android:enabled="false"
         android:text="AR" />
 
 </RelativeLayout>

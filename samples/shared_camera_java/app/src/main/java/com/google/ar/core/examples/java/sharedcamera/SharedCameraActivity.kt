@@ -44,6 +44,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.coroutineScope
 import com.google.ar.core.Anchor
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.ArCoreApk.Availability
@@ -69,12 +70,12 @@ import com.google.ar.core.examples.java.common.rendering.PointCloudRenderer
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.UnavailableException
 import java.io.IOException
-import java.util.Arrays
 import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
-import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * This is a simple example that demonstrates how to use the Camera2 API while sharing camera access
@@ -95,7 +96,8 @@ import kotlinx.coroutines.sync.Semaphore
 class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImageAvailableListener,
     OnFrameAvailableListener {
     // Whether the app is currently in AR mode. Initial value determines initial state.
-    private var arMode = false
+    private var arMode = true
+    private var isArReady = true
 
     // Whether the app has just entered non-AR mode.
     private val isFirstFrameWithoutArcore = AtomicBoolean(true)
@@ -818,7 +820,7 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         displayRotationHelper!!.updateSessionIfNeeded(sharedSession)
 
         try {
-            if (arMode) {
+            if (isArReady) {
                 onDrawFrameARCore()
             } else {
                 onDrawFrameCamera2()
@@ -880,7 +882,11 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
         val camera = frame.camera
 
         // Handle screen tap.
-        handleTap(frame, camera)
+        lifecycle.coroutineScope.launch {
+            isArReady = false
+            handleTap(frame, camera)
+            isArReady = true
+        }
 
         // If frame is ready, render camera preview image to the GL surface.
         backgroundRenderer.draw(frame)
@@ -947,9 +953,14 @@ Should update surface texture: ${shouldUpdateSurfaceTexture.get()}"""
     }
 
     // Handle only one tap per frame, as taps are usually low frequency compared to frame rate.
-    private fun handleTap(frame: Frame, camera: Camera) {
+    private suspend fun handleTap(frame: Frame, camera: Camera) {
         val tap = tapHelper!!.poll()
         if (tap != null && camera.trackingState == TrackingState.TRACKING) {
+            // This causes the camera preview to hang on Samsung S10e
+            val image = kotlin.runCatching { frame.acquireCameraImage() }.getOrNull()
+            image?.close()
+            delay(5000)
+
             for (hit in frame.hitTest(tap)) {
                 // Check if any plane was hit, and if it was hit inside the plane polygon
                 val trackable = hit.trackable
