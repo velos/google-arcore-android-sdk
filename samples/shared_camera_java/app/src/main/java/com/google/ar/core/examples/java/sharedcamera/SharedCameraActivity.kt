@@ -21,6 +21,7 @@ import android.graphics.SurfaceTexture.OnFrameAvailableListener
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCaptureSession.CaptureCallback
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
@@ -187,6 +188,9 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
     private val safeToExitApp = ConditionVariable()
 
     private val lock = java.util.concurrent.Semaphore(1)
+
+    /** Readers used as buffers for camera still shots */
+    private lateinit var imageReader: ImageReader
 
     private class ColoredAnchor(val anchor: Anchor, val color: FloatArray)
 
@@ -499,6 +503,17 @@ class SharedCameraActivity : AppCompatActivity(), GLSurfaceView.Renderer, OnImag
             for (surface in surfaceList) {
                 previewCaptureRequestBuilder!!.addTarget(surface)
             }
+
+            // Initialize an image reader which will be used to capture still photos
+            val characteristics = cameraManager!!.getCameraCharacteristics(cameraId!!)
+            // This must be JPEG on Samsung S10e & Pixel 4a, but must be YUV_420_888 on Pixel 8.
+            val pixelFormat = ImageFormat.JPEG
+            val size = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
+                .getOutputSizes(pixelFormat)
+                .maxByOrNull { it.height * it.width }!!
+            imageReader = ImageReader.newInstance(size.width, size.height, pixelFormat, 3)
+
+            surfaceList.add(imageReader!!.surface)
 
             // Wrap our callback in a shared camera callback.
             val wrappedCallback =
